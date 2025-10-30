@@ -14,7 +14,7 @@ import traceback
 from typing import Any, Literal, Optional
 import yaml
 import kcidb_io
-from django.db import transaction
+from django.db import transaction, connection
 from kernelCI_app.models import Issues, Checkouts, Builds, Tests, Incidents
 
 from kernelCI_app.management.commands.helpers.process_submissions import (
@@ -324,55 +324,154 @@ def db_worker(stop_event: threading.Event) -> None:  # noqa: C901
         try:
             # Single transaction for all tables in the flush
             with transaction.atomic():
-                if issues_buf:
-                    t0 = time.time()
-                    Issues.objects.bulk_create(
-                        issues_buf, batch_size=INGEST_BATCH_SIZE, ignore_conflicts=True
-                    )
-                    _out(
-                        "bulk_create issues: n=%d in %.3fs"
-                        % (len(issues_buf), time.time() - t0)
-                    )
-                if checkouts_buf:
-                    t0 = time.time()
-                    Checkouts.objects.bulk_create(
-                        checkouts_buf,
-                        batch_size=INGEST_BATCH_SIZE,
-                        ignore_conflicts=True,
-                    )
-                    _out(
-                        "bulk_create checkouts: n=%d in %.3fs"
-                        % (len(checkouts_buf), time.time() - t0)
-                    )
-                if builds_buf:
-                    t0 = time.time()
-                    Builds.objects.bulk_create(
-                        builds_buf, batch_size=INGEST_BATCH_SIZE, ignore_conflicts=True
-                    )
-                    _out(
-                        "bulk_create builds: n=%d in %.3fs"
-                        % (len(builds_buf), time.time() - t0)
-                    )
-                if tests_buf:
-                    t0 = time.time()
-                    Tests.objects.bulk_create(
-                        tests_buf, batch_size=INGEST_BATCH_SIZE, ignore_conflicts=True
-                    )
-                    _out(
-                        "bulk_create tests: n=%d in %.3fs"
-                        % (len(tests_buf), time.time() - t0)
-                    )
-                if incidents_buf:
-                    t0 = time.time()
-                    Incidents.objects.bulk_create(
-                        incidents_buf,
-                        batch_size=INGEST_BATCH_SIZE,
-                        ignore_conflicts=True,
-                    )
-                    _out(
-                        "bulk_create incidents: n=%d in %.3fs"
-                        % (len(incidents_buf), time.time() - t0)
-                    )
+                with connection.cursor() as cursor:
+                    if issues_buf:
+                        t0 = time.time()
+                        Issues.objects.bulk_create(
+                            issues_buf,
+                            batch_size=INGEST_BATCH_SIZE,
+                            ignore_conflicts=True,
+                        )
+                        _out(
+                            "bulk_create issues: n=%d in %.3fs"
+                            % (len(issues_buf), time.time() - t0)
+                        )
+                    if checkouts_buf:
+                        t0 = time.time()
+                        Checkouts.objects.bulk_create(
+                            checkouts_buf,
+                            batch_size=INGEST_BATCH_SIZE,
+                            ignore_conflicts=True,
+                        )
+                        _out(
+                            "bulk_create checkouts: n=%d in %.3fs"
+                            % (len(checkouts_buf), time.time() - t0)
+                        )
+                    if builds_buf:
+                        t0 = time.time()
+                        Builds.objects.bulk_create(
+                            builds_buf,
+                            batch_size=INGEST_BATCH_SIZE,
+                            ignore_conflicts=True,
+                        )
+
+                        for build in builds_buf:
+                            cursor.execute(
+                                """
+                                INSERT INTO new_build (build_id, checkout_id, build_origin, status) 
+                                VALUES (%s, %s, %s, %s)
+                                """,
+                                (
+                                    build.id,
+                                    build.checkout_id,
+                                    build.origin,
+                                    build.status,
+                                ),
+                            )
+
+                            cursor.execute(
+                                """
+                                INSERT INTO hardware_status (hardware_origin, hardware_platform, hardware_model, compatibles, checkout_id, date) 
+                                VALUES (%s, %s, %s, %s, %s, %s)
+                                """,
+                                (
+                                    build.origin,
+                                    build.misc.get("platform"),
+                                    build.architecture,
+                                    build.compatibles,
+                                    build.checkout_id,
+                                    build.date,
+                                ),
+                            )
+
+                        _out(
+                            "bulk_create builds: n=%d in %.3fs"
+                            % (len(builds_buf), time.time() - t0)
+                        )
+                    if tests_buf:
+                        t0 = time.time()
+                        Tests.objects.bulk_create(
+                            tests_buf,
+                            batch_size=INGEST_BATCH_SIZE,
+                            ignore_conflicts=True,
+                        )
+
+                        _out("New tests to insert: " + str(len(tests_buf)))
+                        for test in tests_buf:
+                            pass_count = 1 if test.status == "PASS" else 0
+                            failed_count = 1 if test.status == "FAIL" else 0
+                            inc_count = 1 if test.status not in ["PASS", "FAIL"] else 0
+
+                            if test.path == "boot" or test.path.startswith("boot."):
+                                cursor.execute(
+                                    """
+                                    INSERT INTO new_boot (boot_id, build_id, boot_origin, status) 
+                                    VALUES (%s, %s, %s, %s)
+                                    """,
+                                    (test.id, test.build_id, test.origin, test.status),
+                                )
+
+                                cursor.execute(
+                                    """
+                                    INSERT INTO boots_status (build_id, pass, failed, inc) 
+                                    VALUES (%s, %s, %s, %s) 
+                                    ON CONFLICT (build_id) 
+                                    DO UPDATE SET pass = boots_status.pass + %s, failed = boots_status.failed + %s, inc = boots_status.inc + %s
+                                    """,
+                                    (
+                                        test.build_id,
+                                        pass_count,
+                                        failed_count,
+                                        inc_count,
+                                        pass_count,
+                                        failed_count,
+                                        inc_count,
+                                    ),
+                                )
+                            else:
+                                cursor.execute(
+                                    """
+                                    INSERT INTO new_test (test_id, build_id, test_origin, status) 
+                                    VALUES (%s, %s, %s, %s)
+                                    """,
+                                    (test.id, test.build_id, test.origin, test.status),
+                                )
+
+                                cursor.execute(
+                                    """
+                                    INSERT INTO tests_status (build_id, pass, failed, inc) 
+                                    VALUES (%s, %s, %s, %s) 
+                                    ON CONFLICT (build_id) 
+                                    DO UPDATE 
+                                    SET pass = tests_status.pass + %s, 
+                                    failed = tests_status.failed + %s, 
+                                    inc = tests_status.inc + %s
+                                    """,
+                                    (
+                                        test.build_id,
+                                        pass_count,
+                                        failed_count,
+                                        inc_count,
+                                        pass_count,
+                                        failed_count,
+                                        inc_count,
+                                    ),
+                                )
+                        _out(
+                            "bulk_create tests: n=%d in %.3fs"
+                            % (len(tests_buf), time.time() - t0)
+                        )
+                    if incidents_buf:
+                        t0 = time.time()
+                        Incidents.objects.bulk_create(
+                            incidents_buf,
+                            batch_size=INGEST_BATCH_SIZE,
+                            ignore_conflicts=True,
+                        )
+                        _out(
+                            "bulk_create incidents: n=%d in %.3fs"
+                            % (len(incidents_buf), time.time() - t0)
+                        )
         except Exception as e:
             logger.error("Error during bulk_create flush: %s", e)
         finally:
