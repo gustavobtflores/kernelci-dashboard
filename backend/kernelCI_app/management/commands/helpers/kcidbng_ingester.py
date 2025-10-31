@@ -1,5 +1,6 @@
 from os import DirEntry
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta
 import gzip
 import hashlib
 import json
@@ -13,6 +14,8 @@ import time
 import traceback
 from typing import Any, Literal, Optional
 import yaml
+from kernelCI_app.constants.general import MAESTRO_DUMMY_BUILD_PREFIX
+from kernelCI_app.utils import is_boot
 import kcidb_io
 from django.db import transaction, connection
 from kernelCI_app.models import Issues, Checkouts, Builds, Tests, Incidents
@@ -64,6 +67,29 @@ db_lock = threading.Lock()
 
 def _ts() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+
+
+def ceil_to_next_half_hour(dt_input: datetime | str) -> datetime:
+
+    if isinstance(dt_input, str):
+        try:
+            dt = datetime.fromisoformat(dt_input)
+        except ValueError:
+            raise ValueError(f"Invalid datetime string: {dt_input}")
+    else:
+        dt = dt_input
+
+    dt = dt.replace(second=0, microsecond=0)
+    minutes = dt.minute
+
+    if minutes == 0:
+        rounded = dt
+    elif minutes <= 30:
+        rounded = dt.replace(minute=30)
+    else:
+        rounded = (dt + timedelta(hours=1)).replace(minute=0)
+
+    return rounded.isoformat(sep=" ")
 
 
 def _out(msg: str) -> None:
@@ -319,6 +345,9 @@ def db_worker(stop_event: threading.Event) -> None:  # noqa: C901
         if total == 0:
             return
 
+        tests_instances = []
+        builds_instances = []
+
         # Insert in dependency-safe order
         flush_start = time.time()
         try:
@@ -354,35 +383,7 @@ def db_worker(stop_event: threading.Event) -> None:  # noqa: C901
                             batch_size=INGEST_BATCH_SIZE,
                             ignore_conflicts=True,
                         )
-
-                        for build in builds_buf:
-                            cursor.execute(
-                                """
-                                INSERT INTO new_build (build_id, checkout_id, build_origin, status) 
-                                VALUES (%s, %s, %s, %s)
-                                """,
-                                (
-                                    build.id,
-                                    build.checkout_id,
-                                    build.origin,
-                                    build.status,
-                                ),
-                            )
-
-                            cursor.execute(
-                                """
-                                INSERT INTO hardware_status (hardware_origin, hardware_platform, hardware_model, compatibles, checkout_id, date) 
-                                VALUES (%s, %s, %s, %s, %s, %s)
-                                """,
-                                (
-                                    build.origin,
-                                    build.misc.get("platform"),
-                                    build.architecture,
-                                    build.compatibles,
-                                    build.checkout_id,
-                                    build.date,
-                                ),
-                            )
+                        builds_instances = builds_buf[:]
 
                         _out(
                             "bulk_create builds: n=%d in %.3fs"
@@ -395,68 +396,8 @@ def db_worker(stop_event: threading.Event) -> None:  # noqa: C901
                             batch_size=INGEST_BATCH_SIZE,
                             ignore_conflicts=True,
                         )
+                        tests_instances = tests_buf[:]
 
-                        _out("New tests to insert: " + str(len(tests_buf)))
-                        for test in tests_buf:
-                            pass_count = 1 if test.status == "PASS" else 0
-                            failed_count = 1 if test.status == "FAIL" else 0
-                            inc_count = 1 if test.status not in ["PASS", "FAIL"] else 0
-
-                            if test.path == "boot" or test.path.startswith("boot."):
-                                cursor.execute(
-                                    """
-                                    INSERT INTO new_boot (boot_id, build_id, boot_origin, status) 
-                                    VALUES (%s, %s, %s, %s)
-                                    """,
-                                    (test.id, test.build_id, test.origin, test.status),
-                                )
-
-                                cursor.execute(
-                                    """
-                                    INSERT INTO boots_status (build_id, pass, failed, inc) 
-                                    VALUES (%s, %s, %s, %s) 
-                                    ON CONFLICT (build_id) 
-                                    DO UPDATE SET pass = boots_status.pass + %s, failed = boots_status.failed + %s, inc = boots_status.inc + %s
-                                    """,
-                                    (
-                                        test.build_id,
-                                        pass_count,
-                                        failed_count,
-                                        inc_count,
-                                        pass_count,
-                                        failed_count,
-                                        inc_count,
-                                    ),
-                                )
-                            else:
-                                cursor.execute(
-                                    """
-                                    INSERT INTO new_test (test_id, build_id, test_origin, status) 
-                                    VALUES (%s, %s, %s, %s)
-                                    """,
-                                    (test.id, test.build_id, test.origin, test.status),
-                                )
-
-                                cursor.execute(
-                                    """
-                                    INSERT INTO tests_status (build_id, pass, failed, inc) 
-                                    VALUES (%s, %s, %s, %s) 
-                                    ON CONFLICT (build_id) 
-                                    DO UPDATE 
-                                    SET pass = tests_status.pass + %s, 
-                                    failed = tests_status.failed + %s, 
-                                    inc = tests_status.inc + %s
-                                    """,
-                                    (
-                                        test.build_id,
-                                        pass_count,
-                                        failed_count,
-                                        inc_count,
-                                        pass_count,
-                                        failed_count,
-                                        inc_count,
-                                    ),
-                                )
                         _out(
                             "bulk_create tests: n=%d in %.3fs"
                             % (len(tests_buf), time.time() - t0)
@@ -472,6 +413,23 @@ def db_worker(stop_event: threading.Event) -> None:  # noqa: C901
                             "bulk_create incidents: n=%d in %.3fs"
                             % (len(incidents_buf), time.time() - t0)
                         )
+
+                    if tests_instances:
+                        t0 = time.time()
+                        _aggregate_tests_status(tests_instances)
+                        _out(
+                            "aggregate tests status: n=%d in %.3fs"
+                            % (len(tests_instances), time.time() - t0)
+                        )
+
+                    if builds_instances:
+                        t0 = time.time()
+                        _aggregate_builds_status(builds_instances)
+                        _out(
+                            "aggregate builds status: n=%d in %.3fs"
+                            % (len(builds_instances), time.time() - t0)
+                        )
+
         except Exception as e:
             logger.error("Error during bulk_create flush: %s", e)
         finally:
@@ -768,3 +726,349 @@ def cache_logs_maintenance() -> None:
             CACHE_LOGS.clear()
             if VERBOSE:
                 logger.info("Cache logs cleared")
+
+
+def _aggregate_builds_status(builds_instances: list[Builds]) -> dict[str, Any]:
+    with connection.cursor() as cursor:
+        for build in builds_instances:
+            if build.id.startswith(MAESTRO_DUMMY_BUILD_PREFIX):
+                continue
+
+            cursor.execute(
+                """
+                INSERT INTO new_build (build_id, checkout_id, build_origin, status)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (build_id)
+                DO NOTHING
+                RETURNING 1
+                """,
+                (
+                    build.id,
+                    build.checkout_id,
+                    build.origin,
+                    build.status,
+                ),
+            )
+
+            if cursor.fetchone() is None:
+                continue
+
+            build_pass = 1 if build.status == "PASS" else 0
+            build_failed = 1 if build.status == "FAIL" else 0
+            build_inc = 1 if build.status not in ["PASS", "FAIL"] else 0
+
+            hardware_platform = None
+            if build.misc and isinstance(build.misc, dict):
+                hardware_platform = build.misc.get("platform")
+
+            hardware_origin = build.origin
+            build_date = ceil_to_next_half_hour(build.start_time)
+
+            cursor.execute(
+                """
+                SELECT hardware_origin, hardware_platform
+                FROM build_status_by_hardware
+                WHERE build_id = %s
+                LIMIT 1
+                """,
+                (build.id,),
+            )
+            hardware_row = cursor.fetchone()
+
+            if hardware_row:
+                hw_origin, hw_platform = hardware_row[0], hardware_row[1]
+                cursor.execute(
+                    """
+                    INSERT INTO hardware_status (
+                        hardware_origin, hardware_platform, compatibles,
+                        checkout_id, date,
+                        build_pass, build_failed, build_inc,
+                        boot_pass, boot_failed, boot_inc,
+                        test_pass, test_failed, test_inc
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 0, 0, 0, 0, 0, 0)
+                    ON CONFLICT (hardware_origin, hardware_platform, date)
+                    DO UPDATE SET
+                        compatibles = COALESCE(EXCLUDED.compatibles, hardware_status.compatibles),
+                        build_pass = hardware_status.build_pass + EXCLUDED.build_pass,
+                        build_failed = hardware_status.build_failed + EXCLUDED.build_failed,
+                        build_inc = hardware_status.build_inc + EXCLUDED.build_inc
+                    """,
+                    (
+                        hw_origin,
+                        hw_platform,
+                        None,
+                        build.checkout_id,
+                        build_date,
+                        build_pass,
+                        build_failed,
+                        build_inc,
+                    ),
+                )
+            elif hardware_platform:
+                cursor.execute(
+                    """
+                    INSERT INTO hardware_status (
+                        hardware_origin, hardware_platform, compatibles,
+                        checkout_id, date,
+                        build_pass, build_failed, build_inc,
+                        boot_pass, boot_failed, boot_inc,
+                        test_pass, test_failed, test_inc
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 0, 0, 0, 0, 0, 0)
+                    ON CONFLICT (hardware_origin, hardware_platform, date)
+                    DO UPDATE SET
+                        compatibles = COALESCE(EXCLUDED.compatibles, hardware_status.compatibles),
+                        build_pass = hardware_status.build_pass + EXCLUDED.build_pass,
+                        build_failed = hardware_status.build_failed + EXCLUDED.build_failed,
+                        build_inc = hardware_status.build_inc + EXCLUDED.build_inc
+                    """,
+                    (
+                        hardware_origin,
+                        hardware_platform,
+                        None,
+                        build.checkout_id,
+                        build_date,
+                        build_pass,
+                        build_failed,
+                        build_inc,
+                    ),
+                )
+
+
+def _aggregate_tests_status(tests_instances: list[Tests]) -> dict[str, Any]:
+    with connection.cursor() as cursor:
+        for test in tests_instances:
+            pass_count = 1 if test.status == "PASS" else 0
+            failed_count = 1 if test.status == "FAIL" else 0
+            inc_count = 1 if test.status not in ["PASS", "FAIL"] else 0
+            test_platform = (
+                test.environment_misc.get("platform") if test.environment_misc else None
+            )
+
+            if test.environment_misc:
+                cursor.execute(
+                    """
+                    INSERT INTO build_status_by_hardware (hardware_origin, hardware_platform, build_id)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (hardware_origin, hardware_platform, build_id)
+                    DO NOTHING
+                    """,
+                    (
+                        test.origin,
+                        test_platform,
+                        test.build_id,
+                    ),
+                )
+
+            if is_boot(test.path):
+                cursor.execute(
+                    """
+                    INSERT INTO new_boot (boot_id, build_id, boot_origin, boot_platform, status) 
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (boot_id)
+                    DO NOTHING
+                    RETURNING 1
+                    """,
+                    (
+                        test.id,
+                        test.build_id,
+                        test.origin,
+                        test_platform,
+                        test.status,
+                    ),
+                )
+
+                if cursor.fetchone() is None:
+                    continue
+
+                cursor.execute(
+                    """
+                    INSERT INTO boots_status (build_id, pass, failed, inc) 
+                    VALUES (%s, %s, %s, %s) 
+                    ON CONFLICT (build_id)
+                    DO UPDATE SET pass = boots_status.pass + excluded.pass, failed = boots_status.failed + excluded.failed, inc = boots_status.inc + excluded.inc
+                    """,
+                    (
+                        test.build_id,
+                        pass_count,
+                        failed_count,
+                        inc_count,
+                    ),
+                )
+
+                if test.environment_misc and test.environment_misc.get("platform"):
+                    hardware_origin = test.origin
+                    hardware_platform = test.environment_misc.get("platform")
+                    compatibles = test.environment_compatible or None
+                    boot_date = ceil_to_next_half_hour(test.start_time)
+
+                    cursor.execute(
+                        """
+                        SELECT hardware_origin, hardware_platform
+                        FROM build_status_by_hardware
+                        WHERE build_id = %s
+                        LIMIT 1
+                        """,
+                        (test.build_id,),
+                    )
+                    hardware_row = cursor.fetchone()
+
+                    if hardware_row:
+                        hw_origin, hw_platform = hardware_row[0], hardware_row[1]
+                        cursor.execute(
+                            """
+                            INSERT INTO hardware_status (
+                                hardware_origin, hardware_platform, date, compatibles,
+                                boot_pass, boot_failed, boot_inc
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (hardware_origin, hardware_platform, date)
+                            DO UPDATE SET
+                                compatibles = COALESCE(EXCLUDED.compatibles, hardware_status.compatibles),
+                                boot_pass = hardware_status.boot_pass + EXCLUDED.boot_pass,
+                                boot_failed = hardware_status.boot_failed + EXCLUDED.boot_failed,
+                                boot_inc = hardware_status.boot_inc + EXCLUDED.boot_inc
+                            """,
+                            (
+                                hw_origin,
+                                hw_platform,
+                                boot_date,
+                                compatibles,
+                                pass_count,
+                                failed_count,
+                                inc_count,
+                            ),
+                        )
+                    else:
+                        cursor.execute(
+                            """
+                            INSERT INTO hardware_status (
+                                hardware_origin, hardware_platform, date, compatibles,
+                                boot_pass, boot_failed, boot_inc
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (hardware_origin, hardware_platform, date)
+                            DO UPDATE SET
+                                compatibles = COALESCE(EXCLUDED.compatibles, hardware_status.compatibles),
+                                boot_pass = hardware_status.boot_pass + EXCLUDED.boot_pass,
+                                boot_failed = hardware_status.boot_failed + EXCLUDED.boot_failed,
+                                boot_inc = hardware_status.boot_inc + EXCLUDED.boot_inc
+                            """,
+                            (
+                                hardware_origin,
+                                hardware_platform,
+                                boot_date,
+                                compatibles,
+                                pass_count,
+                                failed_count,
+                                inc_count,
+                            ),
+                        )
+            else:
+                cursor.execute(
+                    """
+                    INSERT INTO new_test (test_id, build_id, test_origin, test_platform, status) 
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (test_id)
+                    DO NOTHING
+                    RETURNING 1
+                    """,
+                    (
+                        test.id,
+                        test.build_id,
+                        test.origin,
+                        test_platform,
+                        test.status,
+                    ),
+                )
+
+                if cursor.fetchone() is None:
+                    continue
+
+                cursor.execute(
+                    """
+                    INSERT INTO tests_status (build_id, pass, failed, inc) 
+                    VALUES (%s, %s, %s, %s) 
+                    ON CONFLICT (build_id) 
+                    DO UPDATE 
+                    SET pass = tests_status.pass + excluded.pass, 
+                    failed = tests_status.failed + excluded.failed, 
+                    inc = tests_status.inc + excluded.inc
+                    """,
+                    (
+                        test.build_id,
+                        pass_count,
+                        failed_count,
+                        inc_count,
+                    ),
+                )
+
+                if test.environment_misc and test.environment_misc.get("platform"):
+                    hardware_origin = test.origin
+                    hardware_platform = test.environment_misc.get("platform")
+                    compatibles = test.environment_compatible or None
+                    test_date = ceil_to_next_half_hour(test.start_time)
+
+                    cursor.execute(
+                        """
+                        SELECT hardware_origin, hardware_platform
+                        FROM build_status_by_hardware
+                        WHERE build_id = %s
+                        LIMIT 1
+                        """,
+                        (test.build_id,),
+                    )
+                    hardware_row = cursor.fetchone()
+
+                    if hardware_row:
+                        hw_origin, hw_platform = hardware_row[0], hardware_row[1]
+                        cursor.execute(
+                            """
+                            INSERT INTO hardware_status (
+                                hardware_origin, hardware_platform, date, compatibles,
+                                test_pass, test_failed, test_inc
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (hardware_origin, hardware_platform, date)
+                            DO UPDATE SET
+                                compatibles = COALESCE(EXCLUDED.compatibles, hardware_status.compatibles),
+                                test_pass = hardware_status.test_pass + EXCLUDED.test_pass,
+                                test_failed = hardware_status.test_failed + EXCLUDED.test_failed,
+                                test_inc = hardware_status.test_inc + EXCLUDED.test_inc
+                            """,
+                            (
+                                hw_origin,
+                                hw_platform,
+                                test_date,
+                                compatibles,
+                                pass_count,
+                                failed_count,
+                                inc_count,
+                            ),
+                        )
+                    else:
+                        cursor.execute(
+                            """
+                            INSERT INTO hardware_status (
+                                hardware_origin, hardware_platform, date, compatibles,
+                                test_pass, test_failed, test_inc
+                            )
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (hardware_origin, hardware_platform, date)
+                            DO UPDATE SET
+                                compatibles = COALESCE(EXCLUDED.compatibles, hardware_status.compatibles),
+                                test_pass = hardware_status.test_pass + EXCLUDED.test_pass,
+                                test_failed = hardware_status.test_failed + EXCLUDED.test_failed,
+                                test_inc = hardware_status.test_inc + EXCLUDED.test_inc
+                            """,
+                            (
+                                hardware_origin,
+                                hardware_platform,
+                                test_date,
+                                compatibles,
+                                pass_count,
+                                failed_count,
+                                inc_count,
+                            ),
+                        )
