@@ -165,6 +165,61 @@ def get_hardware_listing_data(
         return dict_fetchall(cursor)
 
 
+def get_hardware_listing_data_from_aggregated(
+    start_date: datetime, end_date: datetime, origin: str
+) -> list[dict]:
+    """Get hardware listing data using the new aggregated tables.
+
+    This function uses the hardware_status table which aggregates data
+    by hardware_origin, hardware_platform, and date (half-hour intervals).
+    Missing status metrics (skip, done, error, miss, null) are set to 0.
+    Tree heads are not used in this implementation.
+    """
+    params = {
+        "start_date": start_date,
+        "end_date": end_date,
+        "origin": origin,
+    }
+
+    query = """
+        SELECT 
+            hardware_platform AS platform,
+            compatibles AS hardware,
+            SUM(build_pass) AS pass_builds,
+            SUM(build_failed) AS fail_builds,
+            0 AS null_builds,
+            0 AS error_builds,
+            0 AS miss_builds,
+            0 AS done_builds,
+            0 AS skip_builds,
+            SUM(boot_pass) AS pass_boots,
+            SUM(boot_failed) AS fail_boots,
+            0 AS error_boots,
+            0 AS miss_boots,
+            0 AS done_boots,
+            0 AS skip_boots,
+            0 AS null_boots,
+            SUM(test_pass) AS pass_tests,
+            SUM(test_failed) AS fail_tests,
+            0 AS error_tests,
+            0 AS miss_tests,
+            0 AS done_tests,
+            0 AS skip_tests,
+            0 AS null_tests
+        FROM hardware_status
+        WHERE 
+            hardware_origin = %(origin)s
+            AND date >= %(start_date)s
+            AND date <= %(end_date)s
+            AND hardware_platform IS NOT NULL
+        GROUP BY hardware_platform, compatibles
+    """
+
+    with connection.cursor() as cursor:
+        cursor.execute(query, params)
+        return dict_fetchall(cursor)
+
+
 def get_hardware_details_data(
     *,
     hardware_id: str,

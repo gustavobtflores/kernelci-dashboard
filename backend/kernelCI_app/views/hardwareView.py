@@ -15,11 +15,17 @@ from kernelCI_app.typeModels.hardwareListing import (
     HardwareQueryParamsDocumentationOnly,
     HardwareListingResponse,
 )
-from kernelCI_app.queries.hardware import get_hardware_listing_data
+from kernelCI_app.queries.hardware import (
+    get_hardware_listing_data,
+    get_hardware_listing_data_from_aggregated,
+)
 from kernelCI_app.constants.localization import ClientStrings
 
 
 class HardwareView(APIView):
+    # Feature flag to switch between old and new query implementations
+    USE_AGGREGATED_TABLES = True
+
     def _sanitize_records(self, hardwares_raw: list[dict]) -> list[HardwareItem]:
         hardwares = []
         for hardware in hardwares_raw:
@@ -64,24 +70,34 @@ class HardwareView(APIView):
         responses=HardwareListingResponse,
     )
     def get(self, request: Request):
+        # Hardcoded start and end dates for ingester testing
+        start_date: datetime = datetime(2025, 7, 14, 0, 0, 0)
+        end_date: datetime = datetime(2025, 7, 19, 23, 59, 59)
+
         try:
+            # Only validate origin parameter
             query_params = HardwareQueryParams(
-                start_date=request.GET.get("startTimestampInSeconds"),
-                end_date=request.GET.get("endTimestampInSeconds"),
+                start_date=start_date,
+                end_date=end_date,
                 origin=request.GET.get("origin"),
             )
 
-            start_date: datetime = query_params.start_date
-            end_date: datetime = query_params.end_date
             origin = query_params.origin
         except ValidationError as e:
             return Response(data=e.json(), status=HTTPStatus.BAD_REQUEST)
 
-        hardwares_raw = get_hardware_listing_data(
-            origin=origin,
-            start_date=start_date,
-            end_date=end_date,
-        )
+        if self.USE_AGGREGATED_TABLES:
+            hardwares_raw = get_hardware_listing_data_from_aggregated(
+                origin=origin,
+                start_date=start_date,
+                end_date=end_date,
+            )
+        else:
+            hardwares_raw = get_hardware_listing_data(
+                origin=origin,
+                start_date=start_date,
+                end_date=end_date,
+            )
 
         try:
             sanitized_records = self._sanitize_records(hardwares_raw=hardwares_raw)
