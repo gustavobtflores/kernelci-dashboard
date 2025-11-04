@@ -173,7 +173,6 @@ def get_hardware_listing_data_from_aggregated(
     This function uses the hardware_status table which aggregates data
     by hardware_origin, hardware_platform, and date (half-hour intervals).
     Missing status metrics (skip, done, error, miss, null) are set to 0.
-    Tree heads are not used in this implementation.
     """
     params = {
         "start_date": start_date,
@@ -181,38 +180,47 @@ def get_hardware_listing_data_from_aggregated(
         "origin": origin,
     }
 
-    query = """
+    tree_head_clause = _get_hardware_tree_heads_clause(id_only=True)
+
+    query = f"""
+        WITH
+            -- Get IDs of latest checkouts for each tree in the period
+            tree_heads AS (
+                {tree_head_clause}
+            )
         SELECT 
-            hardware_platform AS platform,
-            compatibles AS hardware,
-            SUM(build_pass) AS pass_builds,
-            SUM(build_failed) AS fail_builds,
+            hs.hardware_platform AS platform,
+            hs.compatibles AS hardware,
+            SUM(hs.build_pass) AS pass_builds,
+            SUM(hs.build_failed) AS fail_builds,
             0 AS null_builds,
             0 AS error_builds,
             0 AS miss_builds,
             0 AS done_builds,
             0 AS skip_builds,
-            SUM(boot_pass) AS pass_boots,
-            SUM(boot_failed) AS fail_boots,
+            SUM(hs.boot_pass) AS pass_boots,
+            SUM(hs.boot_failed) AS fail_boots,
             0 AS error_boots,
             0 AS miss_boots,
             0 AS done_boots,
             0 AS skip_boots,
             0 AS null_boots,
-            SUM(test_pass) AS pass_tests,
-            SUM(test_failed) AS fail_tests,
+            SUM(hs.test_pass) AS pass_tests,
+            SUM(hs.test_failed) AS fail_tests,
             0 AS error_tests,
             0 AS miss_tests,
             0 AS done_tests,
             0 AS skip_tests,
             0 AS null_tests
-        FROM hardware_status
+        FROM hardware_status hs
+        INNER JOIN builds b ON hs.build_id = b.id
+        INNER JOIN tree_heads th ON b.checkout_id = th.id
         WHERE 
-            hardware_origin = %(origin)s
-            AND date >= %(start_date)s
-            AND date <= %(end_date)s
-            AND hardware_platform IS NOT NULL
-        GROUP BY hardware_platform, compatibles
+            hs.hardware_origin = %(origin)s
+            AND hs.date >= %(start_date)s
+            AND hs.date <= %(end_date)s
+            AND hs.hardware_platform IS NOT NULL
+        GROUP BY hs.hardware_platform, hs.compatibles
     """
 
     with connection.cursor() as cursor:

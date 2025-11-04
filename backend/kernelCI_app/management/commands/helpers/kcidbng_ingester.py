@@ -756,12 +756,6 @@ def _aggregate_builds_status(builds_instances: list[Builds]) -> dict[str, Any]:
             build_pass = 1 if build.status == "PASS" else 0
             build_failed = 1 if build.status == "FAIL" else 0
             build_inc = 1 if build.status not in ["PASS", "FAIL"] else 0
-
-            hardware_platform = None
-            if build.misc and isinstance(build.misc, dict):
-                hardware_platform = build.misc.get("platform")
-
-            hardware_origin = build.origin
             build_date = ceil_to_next_half_hour(build.start_time)
 
             cursor.execute(
@@ -769,25 +763,26 @@ def _aggregate_builds_status(builds_instances: list[Builds]) -> dict[str, Any]:
                 SELECT hardware_origin, hardware_platform
                 FROM build_status_by_hardware
                 WHERE build_id = %s
-                LIMIT 1
                 """,
                 (build.id,),
             )
-            hardware_row = cursor.fetchone()
+            hardware_rows = cursor.fetchall()
 
-            if hardware_row:
-                hw_origin, hw_platform = hardware_row[0], hardware_row[1]
+            for hardware_row in hardware_rows:
+                hw_origin = hardware_row[0]
+                hw_platform = hardware_row[1]
+
                 cursor.execute(
                     """
                     INSERT INTO hardware_status (
                         hardware_origin, hardware_platform, compatibles,
-                        checkout_id, date,
+                        build_id, date,
                         build_pass, build_failed, build_inc,
                         boot_pass, boot_failed, boot_inc,
                         test_pass, test_failed, test_inc
                     )
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 0, 0, 0, 0, 0, 0)
-                    ON CONFLICT (hardware_origin, hardware_platform, date)
+                    ON CONFLICT (hardware_origin, hardware_platform, build_id, date)
                     DO UPDATE SET
                         compatibles = COALESCE(EXCLUDED.compatibles, hardware_status.compatibles),
                         build_pass = hardware_status.build_pass + EXCLUDED.build_pass,
@@ -798,36 +793,7 @@ def _aggregate_builds_status(builds_instances: list[Builds]) -> dict[str, Any]:
                         hw_origin,
                         hw_platform,
                         None,
-                        build.checkout_id,
-                        build_date,
-                        build_pass,
-                        build_failed,
-                        build_inc,
-                    ),
-                )
-            elif hardware_platform:
-                cursor.execute(
-                    """
-                    INSERT INTO hardware_status (
-                        hardware_origin, hardware_platform, compatibles,
-                        checkout_id, date,
-                        build_pass, build_failed, build_inc,
-                        boot_pass, boot_failed, boot_inc,
-                        test_pass, test_failed, test_inc
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 0, 0, 0, 0, 0, 0)
-                    ON CONFLICT (hardware_origin, hardware_platform, date)
-                    DO UPDATE SET
-                        compatibles = COALESCE(EXCLUDED.compatibles, hardware_status.compatibles),
-                        build_pass = hardware_status.build_pass + EXCLUDED.build_pass,
-                        build_failed = hardware_status.build_failed + EXCLUDED.build_failed,
-                        build_inc = hardware_status.build_inc + EXCLUDED.build_inc
-                    """,
-                    (
-                        hardware_origin,
-                        hardware_platform,
-                        None,
-                        build.checkout_id,
+                        build.id,
                         build_date,
                         build_pass,
                         build_failed,
@@ -846,7 +812,7 @@ def _aggregate_tests_status(tests_instances: list[Tests]) -> dict[str, Any]:
                 test.environment_misc.get("platform") if test.environment_misc else None
             )
 
-            if test.environment_misc:
+            if test_platform:
                 cursor.execute(
                     """
                     INSERT INTO build_status_by_hardware (hardware_origin, hardware_platform, build_id)
@@ -887,7 +853,10 @@ def _aggregate_tests_status(tests_instances: list[Tests]) -> dict[str, Any]:
                     INSERT INTO boots_status (build_id, pass, failed, inc) 
                     VALUES (%s, %s, %s, %s) 
                     ON CONFLICT (build_id)
-                    DO UPDATE SET pass = boots_status.pass + excluded.pass, failed = boots_status.failed + excluded.failed, inc = boots_status.inc + excluded.inc
+                    DO UPDATE SET 
+                        pass = boots_status.pass + EXCLUDED.pass, 
+                        failed = boots_status.failed + EXCLUDED.failed, 
+                        inc = boots_status.inc + EXCLUDED.inc
                     """,
                     (
                         test.build_id,
@@ -896,75 +865,6 @@ def _aggregate_tests_status(tests_instances: list[Tests]) -> dict[str, Any]:
                         inc_count,
                     ),
                 )
-
-                if test.environment_misc and test.environment_misc.get("platform"):
-                    hardware_origin = test.origin
-                    hardware_platform = test.environment_misc.get("platform")
-                    compatibles = test.environment_compatible or None
-                    boot_date = ceil_to_next_half_hour(test.start_time)
-
-                    cursor.execute(
-                        """
-                        SELECT hardware_origin, hardware_platform
-                        FROM build_status_by_hardware
-                        WHERE build_id = %s
-                        LIMIT 1
-                        """,
-                        (test.build_id,),
-                    )
-                    hardware_row = cursor.fetchone()
-
-                    if hardware_row:
-                        hw_origin, hw_platform = hardware_row[0], hardware_row[1]
-                        cursor.execute(
-                            """
-                            INSERT INTO hardware_status (
-                                hardware_origin, hardware_platform, date, compatibles,
-                                boot_pass, boot_failed, boot_inc
-                            )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s)
-                            ON CONFLICT (hardware_origin, hardware_platform, date)
-                            DO UPDATE SET
-                                compatibles = COALESCE(EXCLUDED.compatibles, hardware_status.compatibles),
-                                boot_pass = hardware_status.boot_pass + EXCLUDED.boot_pass,
-                                boot_failed = hardware_status.boot_failed + EXCLUDED.boot_failed,
-                                boot_inc = hardware_status.boot_inc + EXCLUDED.boot_inc
-                            """,
-                            (
-                                hw_origin,
-                                hw_platform,
-                                boot_date,
-                                compatibles,
-                                pass_count,
-                                failed_count,
-                                inc_count,
-                            ),
-                        )
-                    else:
-                        cursor.execute(
-                            """
-                            INSERT INTO hardware_status (
-                                hardware_origin, hardware_platform, date, compatibles,
-                                boot_pass, boot_failed, boot_inc
-                            )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s)
-                            ON CONFLICT (hardware_origin, hardware_platform, date)
-                            DO UPDATE SET
-                                compatibles = COALESCE(EXCLUDED.compatibles, hardware_status.compatibles),
-                                boot_pass = hardware_status.boot_pass + EXCLUDED.boot_pass,
-                                boot_failed = hardware_status.boot_failed + EXCLUDED.boot_failed,
-                                boot_inc = hardware_status.boot_inc + EXCLUDED.boot_inc
-                            """,
-                            (
-                                hardware_origin,
-                                hardware_platform,
-                                boot_date,
-                                compatibles,
-                                pass_count,
-                                failed_count,
-                                inc_count,
-                            ),
-                        )
             else:
                 cursor.execute(
                     """
@@ -991,10 +891,10 @@ def _aggregate_tests_status(tests_instances: list[Tests]) -> dict[str, Any]:
                     INSERT INTO tests_status (build_id, pass, failed, inc) 
                     VALUES (%s, %s, %s, %s) 
                     ON CONFLICT (build_id) 
-                    DO UPDATE 
-                    SET pass = tests_status.pass + excluded.pass, 
-                    failed = tests_status.failed + excluded.failed, 
-                    inc = tests_status.inc + excluded.inc
+                    DO UPDATE SET 
+                    pass = tests_status.pass + EXCLUDED.pass, 
+                    failed = tests_status.failed + EXCLUDED.failed, 
+                    inc = tests_status.inc + EXCLUDED.inc
                     """,
                     (
                         test.build_id,
@@ -1004,71 +904,63 @@ def _aggregate_tests_status(tests_instances: list[Tests]) -> dict[str, Any]:
                     ),
                 )
 
-                if test.environment_misc and test.environment_misc.get("platform"):
-                    hardware_origin = test.origin
-                    hardware_platform = test.environment_misc.get("platform")
-                    compatibles = test.environment_compatible or None
-                    test_date = ceil_to_next_half_hour(test.start_time)
+            cursor.execute(
+                """
+                SELECT hardware_origin, hardware_platform
+                FROM build_status_by_hardware
+                WHERE build_id = %s
+                LIMIT 1
+                """,
+                (test.build_id,),
+            )
+            hardware_row = cursor.fetchone()
 
-                    cursor.execute(
-                        """
-                        SELECT hardware_origin, hardware_platform
-                        FROM build_status_by_hardware
-                        WHERE build_id = %s
-                        LIMIT 1
-                        """,
-                        (test.build_id,),
+            hw_origin = None
+            hw_platform = None
+
+            if test_platform:
+                hw_origin = test.origin
+                hw_platform = test_platform
+            elif hardware_row:
+                hw_origin = hardware_row[0]
+                hw_platform = hardware_row[1]
+
+            if hw_origin and hw_platform:
+                compatibles = test.environment_compatible or None
+                event_date = ceil_to_next_half_hour(test.start_time)
+                is_boot_test = is_boot(test.path)
+
+                cursor.execute(
+                    """
+                    INSERT INTO hardware_status (
+                        hardware_origin, hardware_platform, date, compatibles,
+                        build_id,
+                        build_pass, build_failed, build_inc,
+                        boot_pass, boot_failed, boot_inc,
+                        test_pass, test_failed, test_inc
                     )
-                    hardware_row = cursor.fetchone()
-
-                    if hardware_row:
-                        hw_origin, hw_platform = hardware_row[0], hardware_row[1]
-                        cursor.execute(
-                            """
-                            INSERT INTO hardware_status (
-                                hardware_origin, hardware_platform, date, compatibles,
-                                test_pass, test_failed, test_inc
-                            )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s)
-                            ON CONFLICT (hardware_origin, hardware_platform, date)
-                            DO UPDATE SET
-                                compatibles = COALESCE(EXCLUDED.compatibles, hardware_status.compatibles),
-                                test_pass = hardware_status.test_pass + EXCLUDED.test_pass,
-                                test_failed = hardware_status.test_failed + EXCLUDED.test_failed,
-                                test_inc = hardware_status.test_inc + EXCLUDED.test_inc
-                            """,
-                            (
-                                hw_origin,
-                                hw_platform,
-                                test_date,
-                                compatibles,
-                                pass_count,
-                                failed_count,
-                                inc_count,
-                            ),
-                        )
-                    else:
-                        cursor.execute(
-                            """
-                            INSERT INTO hardware_status (
-                                hardware_origin, hardware_platform, date, compatibles,
-                                test_pass, test_failed, test_inc
-                            )
-                            VALUES (%s, %s, %s, %s, %s, %s, %s)
-                            ON CONFLICT (hardware_origin, hardware_platform, date)
-                            DO UPDATE SET
-                                compatibles = COALESCE(EXCLUDED.compatibles, hardware_status.compatibles),
-                                test_pass = hardware_status.test_pass + EXCLUDED.test_pass,
-                                test_failed = hardware_status.test_failed + EXCLUDED.test_failed,
-                                test_inc = hardware_status.test_inc + EXCLUDED.test_inc
-                            """,
-                            (
-                                hardware_origin,
-                                hardware_platform,
-                                test_date,
-                                compatibles,
-                                pass_count,
-                                failed_count,
-                                inc_count,
-                            ),
-                        )
+                    VALUES (%s, %s, %s, %s, %s, 0, 0, 0, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (hardware_origin, hardware_platform, build_id, date)
+                    DO UPDATE SET
+                        compatibles = COALESCE(hardware_status.compatibles, EXCLUDED.compatibles),
+                        boot_pass = hardware_status.boot_pass + EXCLUDED.boot_pass,
+                        boot_failed = hardware_status.boot_failed + EXCLUDED.boot_failed,
+                        boot_inc = hardware_status.boot_inc + EXCLUDED.boot_inc,
+                        test_pass = hardware_status.test_pass + EXCLUDED.test_pass,
+                        test_failed = hardware_status.test_failed + EXCLUDED.test_failed,
+                        test_inc = hardware_status.test_inc + EXCLUDED.test_inc
+                    """,
+                    (
+                        hw_origin,
+                        hw_platform,
+                        event_date,
+                        compatibles,
+                        test.build_id,
+                        pass_count if is_boot_test else 0,
+                        failed_count if is_boot_test else 0,
+                        inc_count if is_boot_test else 0,
+                        pass_count if not is_boot_test else 0,
+                        failed_count if not is_boot_test else 0,
+                        inc_count if not is_boot_test else 0,
+                    ),
+                )

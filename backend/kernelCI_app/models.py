@@ -234,7 +234,7 @@ class HardwareStatus(models.Model):
     hardware_origin = models.CharField(max_length=100)
     hardware_platform = models.CharField(max_length=100)
     compatibles = ArrayField(models.TextField(), null=True)
-    checkout_id = models.TextField()
+    build_id = models.TextField()
     date = models.DateTimeField()
 
     build_pass = models.IntegerField()
@@ -249,7 +249,7 @@ class HardwareStatus(models.Model):
 
     class Meta:
         db_table = "hardware_status"
-        unique_together = ("hardware_origin", "hardware_platform", "date")
+        unique_together = ("hardware_origin", "hardware_platform", "build_id", "date")
 
 
 class NewBuild(models.Model):
