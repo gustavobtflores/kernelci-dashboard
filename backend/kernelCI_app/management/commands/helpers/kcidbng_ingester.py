@@ -18,7 +18,16 @@ from kernelCI_app.constants.general import MAESTRO_DUMMY_BUILD_PREFIX
 from kernelCI_app.utils import is_boot
 import kcidb_io
 from django.db import transaction, connection
-from kernelCI_app.models import Issues, Checkouts, Builds, Tests, Incidents
+from kernelCI_app.models import (
+    Issues,
+    Checkouts,
+    Builds,
+    NewBoot,
+    NewBuild,
+    NewTest,
+    Tests,
+    Incidents,
+)
 
 from kernelCI_app.management.commands.helpers.process_submissions import (
     build_instances_from_submission,
@@ -728,31 +737,42 @@ def cache_logs_maintenance() -> None:
                 logger.info("Cache logs cleared")
 
 
+def convert_build(b: Builds) -> NewBuild:
+    return NewBuild(
+        build_id=b.id,
+        checkout_id=b.checkout_id,
+        build_origin=b.origin,
+        status=b.status,
+    )
+
+
 def _aggregate_builds_status(builds_instances: list[Builds]) -> dict[str, Any]:
+    filtered_builds = [
+        build
+        for build in builds_instances
+        if not build.id.startswith(MAESTRO_DUMMY_BUILD_PREFIX)
+    ]
+
+    filtered_builds_ids = [build.id for build in filtered_builds]
+
     with connection.cursor() as cursor:
-        for build in builds_instances:
-            if build.id.startswith(MAESTRO_DUMMY_BUILD_PREFIX):
-                continue
+        cursor.execute(
+            """
+            SELECT build_id FROM new_build WHERE build_id = ANY (%s)
+            """,
+            (filtered_builds_ids,),
+        )
+        existing_builds = {row[0] for row in cursor.fetchall()}
 
-            cursor.execute(
-                """
-                INSERT INTO new_build (build_id, checkout_id, build_origin, status)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (build_id)
-                DO NOTHING
-                RETURNING 1
-                """,
-                (
-                    build.id,
-                    build.checkout_id,
-                    build.origin,
-                    build.status,
-                ),
-            )
+        builds_to_insert = [b for b in filtered_builds if b.id not in existing_builds]
 
-            if cursor.fetchone() is None:
-                continue
+        NewBuild.objects.bulk_create(
+            (convert_build(b) for b in builds_to_insert),
+            batch_size=INGEST_BATCH_SIZE,
+            ignore_conflicts=True,
+        )
 
+        for build in builds_to_insert:
             build_pass = 1 if build.status == "PASS" else 0
             build_failed = 1 if build.status == "FAIL" else 0
             build_inc = 1 if build.status not in ["PASS", "FAIL"] else 0
@@ -784,7 +804,7 @@ def _aggregate_builds_status(builds_instances: list[Builds]) -> dict[str, Any]:
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 0, 0, 0, 0, 0, 0)
                     ON CONFLICT (hardware_origin, hardware_platform, build_id, date)
                     DO UPDATE SET
-                        compatibles = COALESCE(EXCLUDED.compatibles, hardware_status.compatibles),
+                        compatibles = COALESCE(hardware_status.compatibles, EXCLUDED.compatibles),
                         build_pass = hardware_status.build_pass + EXCLUDED.build_pass,
                         build_failed = hardware_status.build_failed + EXCLUDED.build_failed,
                         build_inc = hardware_status.build_inc + EXCLUDED.build_inc
@@ -802,9 +822,73 @@ def _aggregate_builds_status(builds_instances: list[Builds]) -> dict[str, Any]:
                 )
 
 
+def convert_test(t: Tests) -> NewTest:
+    return NewTest(
+        test_id=t.id,
+        build_id=t.build_id,
+        test_origin=t.origin,
+        test_platform=(
+            t.environment_misc.get("platform") if t.environment_misc else None
+        ),
+        status=t.status,
+    )
+
+
+def convert_boot(t: Tests) -> NewBoot:
+    return NewBoot(
+        boot_id=t.id,
+        build_id=t.build_id,
+        boot_origin=t.origin,
+        boot_platform=(
+            t.environment_misc.get("platform") if t.environment_misc else None
+        ),
+        status=t.status,
+    )
+
+
 def _aggregate_tests_status(tests_instances: list[Tests]) -> dict[str, Any]:
+    regular_tests = []
+    boot_tests = []
+
+    for test in tests_instances:
+        if is_boot(test.path):
+            boot_tests.append(test)
+        else:
+            regular_tests.append(test)
+
+    regular_tests_ids = [test.id for test in regular_tests]
+    boot_tests_ids = [test.id for test in boot_tests]
+
     with connection.cursor() as cursor:
-        for test in tests_instances:
+        cursor.execute(
+            "SELECT test_id FROM new_test WHERE test_id = ANY(%s)",
+            (regular_tests_ids,),
+        )
+        existing_regular = {row[0] for row in cursor.fetchall()}
+
+        cursor.execute(
+            "SELECT boot_id FROM new_boot WHERE boot_id = ANY(%s)",
+            (boot_tests_ids,),
+        )
+        existing_boot = {row[0] for row in cursor.fetchall()}
+
+        regular_tests_to_insert = [
+            t for t in regular_tests if t.id not in existing_regular
+        ]
+        boot_tests_to_insert = [t for t in boot_tests if t.id not in existing_boot]
+
+        NewTest.objects.bulk_create(
+            (convert_test(t) for t in regular_tests_to_insert),
+            batch_size=INGEST_BATCH_SIZE,
+            ignore_conflicts=True,
+        )
+        NewBoot.objects.bulk_create(
+            (convert_boot(t) for t in boot_tests_to_insert),
+            batch_size=INGEST_BATCH_SIZE,
+            ignore_conflicts=True,
+        )
+
+        for test in [*regular_tests_to_insert, *boot_tests_to_insert]:
             pass_count = 1 if test.status == "PASS" else 0
             failed_count = 1 if test.status == "FAIL" else 0
             inc_count = 1 if test.status not in ["PASS", "FAIL"] else 0
@@ -824,83 +908,6 @@ def _aggregate_tests_status(tests_instances: list[Tests]) -> dict[str, Any]:
                         test.origin,
                         test_platform,
                         test.build_id,
-                    ),
-                )
-
-            if is_boot(test.path):
-                cursor.execute(
-                    """
-                    INSERT INTO new_boot (boot_id, build_id, boot_origin, boot_platform, status) 
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (boot_id)
-                    DO NOTHING
-                    RETURNING 1
-                    """,
-                    (
-                        test.id,
-                        test.build_id,
-                        test.origin,
-                        test_platform,
-                        test.status,
-                    ),
-                )
-
-                if cursor.fetchone() is None:
-                    continue
-
-                cursor.execute(
-                    """
-                    INSERT INTO boots_status (build_id, pass, failed, inc) 
-                    VALUES (%s, %s, %s, %s) 
-                    ON CONFLICT (build_id)
-                    DO UPDATE SET 
-                        pass = boots_status.pass + EXCLUDED.pass, 
-                        failed = boots_status.failed + EXCLUDED.failed, 
-                        inc = boots_status.inc + EXCLUDED.inc
-                    """,
-                    (
-                        test.build_id,
-                        pass_count,
-                        failed_count,
-                        inc_count,
-                    ),
-                )
-            else:
-                cursor.execute(
-                    """
-                    INSERT INTO new_test (test_id, build_id, test_origin, test_platform, status) 
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (test_id)
-                    DO NOTHING
-                    RETURNING 1
-                    """,
-                    (
-                        test.id,
-                        test.build_id,
-                        test.origin,
-                        test_platform,
-                        test.status,
-                    ),
-                )
-
-                if cursor.fetchone() is None:
-                    continue
-
-                cursor.execute(
-                    """
-                    INSERT INTO tests_status (build_id, pass, failed, inc) 
-                    VALUES (%s, %s, %s, %s) 
-                    ON CONFLICT (build_id) 
-                    DO UPDATE SET 
-                    pass = tests_status.pass + EXCLUDED.pass, 
-                    failed = tests_status.failed + EXCLUDED.failed, 
-                    inc = tests_status.inc + EXCLUDED.inc
-                    """,
-                    (
-                        test.build_id,
-                        pass_count,
-                        failed_count,
-                        inc_count,
                     ),
                 )
 

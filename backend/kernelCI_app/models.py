@@ -290,26 +290,6 @@ class NewTest(models.Model):
         db_table = "new_test"
 
 
-class BootsStatus(models.Model):
-    build_id = models.TextField(primary_key=True)
-    pass_count = models.IntegerField(db_column="pass", default=0)
-    failed = models.IntegerField(default=0)
-    inc = models.IntegerField(default=0)
-
-    class Meta:
-        db_table = "boots_status"
-
-
-class TestsStatus(models.Model):
-    build_id = models.TextField(primary_key=True)
-    pass_count = models.IntegerField(db_column="pass", default=0)
-    failed = models.IntegerField(default=0)
-    inc = models.IntegerField(default=0)
-
-    class Meta:
-        db_table = "tests_status"
-
-
 class BuildStatusByHardware(models.Model):
     hardware_origin = models.CharField(max_length=100)
     hardware_platform = models.CharField(max_length=100)
