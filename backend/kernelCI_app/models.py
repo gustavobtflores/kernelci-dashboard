@@ -233,6 +233,7 @@ class Incidents(models.Model):
 class HardwareStatus(models.Model):
     hardware_origin = models.CharField(max_length=100)
     hardware_platform = models.CharField(max_length=100)
+    build_id = models.TextField()
     compatibles = ArrayField(models.TextField(), null=True)
     date = models.IntegerField()
 
@@ -248,7 +249,7 @@ class HardwareStatus(models.Model):
 
     class Meta:
         db_table = "hardware_status"
-        unique_together = ("hardware_origin", "hardware_platform", "date")
+        unique_together = ("hardware_origin", "hardware_platform", "date", "build_id")
 
 
 class NewBuild(models.Model):

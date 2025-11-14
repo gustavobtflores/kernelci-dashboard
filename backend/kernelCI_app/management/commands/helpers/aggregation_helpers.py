@@ -58,12 +58,13 @@ def aggregate_hardware_status_data(tests: list[NewTest]) -> dict:
         failed_count = 1 if test.status == "FAIL" else 0
         inc_count = 1 if test.status not in ("PASS", "FAIL") else 0
 
-        key = (test.test_origin, test.test_platform, test.start_time)
+        key = (test.test_origin, test.test_platform, test.build_id, test.start_time)
 
         if key not in aggregated_data:
             aggregated_data[key] = {
                 "hardware_origin": test.test_origin,
                 "hardware_platform": test.test_platform,
+                "build_id": test.build_id,
                 "date": test.start_time,
                 "compatibles": test.test_compatible,
                 "build_pass": 0,
@@ -144,32 +145,32 @@ def aggregate_tests_status(tests_instances: list[Tests]) -> None:
 
     new_tests_only = [t for t in tests_to_insert if t.test_id not in existing_test_ids]
 
+    NewTest.objects.bulk_create(
+        tests_to_insert,
+        batch_size=INGEST_BATCH_SIZE,
+        ignore_conflicts=True,
+    )
+
+    build_status_by_hardware = prepare_build_status_by_hardware(new_tests_only)
+    BuildStatusByHardware.objects.bulk_create(
+        build_status_by_hardware,
+        batch_size=INGEST_BATCH_SIZE,
+        ignore_conflicts=True,
+    )
+
+    aggregated_data = aggregate_hardware_status_data(new_tests_only)
+
     with connection.cursor() as cursor:
-        NewTest.objects.bulk_create(
-            tests_to_insert,
-            batch_size=INGEST_BATCH_SIZE,
-            ignore_conflicts=True,
-        )
-
-        build_status_by_hardware = prepare_build_status_by_hardware(new_tests_only)
-        BuildStatusByHardware.objects.bulk_create(
-            build_status_by_hardware,
-            batch_size=INGEST_BATCH_SIZE,
-            ignore_conflicts=True,
-        )
-
-        aggregated_data = aggregate_hardware_status_data(new_tests_only)
-
         if aggregated_data:
             insert_query = """
                 INSERT INTO hardware_status (
-                    hardware_origin, hardware_platform, date, compatibles,
+                    hardware_origin, hardware_platform, build_id, date, compatibles,
                     build_pass, build_failed, build_inc,
                     boot_pass, boot_failed, boot_inc,
                     test_pass, test_failed, test_inc
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (hardware_origin, hardware_platform, date)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (hardware_origin, hardware_platform, build_id, date)
                 DO UPDATE SET
                     compatibles = COALESCE(hardware_status.compatibles, EXCLUDED.compatibles),
                     boot_pass = hardware_status.boot_pass + EXCLUDED.boot_pass,
@@ -184,6 +185,7 @@ def aggregate_tests_status(tests_instances: list[Tests]) -> None:
                 (
                     data["hardware_origin"],
                     data["hardware_platform"],
+                    data["build_id"],
                     data["date"],
                     data["compatibles"],
                     data["build_pass"],
