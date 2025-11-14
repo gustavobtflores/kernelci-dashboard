@@ -237,9 +237,6 @@ class HardwareStatus(models.Model):
     compatibles = ArrayField(models.TextField(), null=True)
     date = models.IntegerField()
 
-    build_pass = models.IntegerField()
-    build_failed = models.IntegerField()
-    build_inc = models.IntegerField()
     boot_pass = models.IntegerField()
     boot_failed = models.IntegerField()
     boot_inc = models.IntegerField()
@@ -286,6 +283,9 @@ class BuildStatusByHardware(models.Model):
     hardware_origin = models.CharField(max_length=100)
     hardware_platform = models.CharField(max_length=100)
     build_id = models.TextField()
+    build_pass = models.IntegerField(default=0)
+    build_failed = models.IntegerField(default=0)
+    build_inc = models.IntegerField(default=0)
 
     class Meta:
         db_table = "build_status_by_hardware"
