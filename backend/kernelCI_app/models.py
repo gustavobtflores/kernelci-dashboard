@@ -231,62 +231,70 @@ class Incidents(models.Model):
 
 
 class HardwareStatus(models.Model):
-    hardware_origin = models.CharField(max_length=100)
-    hardware_platform = models.CharField(max_length=100)
-    build_id = models.TextField()
-    compatibles = ArrayField(models.TextField(), null=True)
-    date = models.IntegerField()
-
-    boot_pass = models.IntegerField()
-    boot_failed = models.IntegerField()
-    boot_inc = models.IntegerField()
-    test_pass = models.IntegerField()
-    test_failed = models.IntegerField()
-    test_inc = models.IntegerField()
-
-    class Meta:
-        db_table = "hardware_status"
-        unique_together = ("hardware_origin", "hardware_platform", "date", "build_id")
-
-
-class NewBuild(models.Model):
-    build_id = models.TextField(primary_key=True)
     checkout_id = models.TextField()
-    build_origin = models.CharField(max_length=100)
-    status = models.CharField(
-        max_length=10, choices=StatusChoices.choices, blank=True, null=True
-    )
-
-    class Meta:
-        db_table = "new_build"
-        unique_together = ("build_id", "checkout_id")
-
-
-class NewTest(models.Model):
-    test_id = models.TextField(primary_key=True)
-    build_id = models.TextField()
-    test_origin = models.CharField(max_length=100)
-    test_platform = models.CharField(max_length=100)
-    test_compatible = ArrayField(models.TextField(), null=True)
-    status = models.CharField(
-        max_length=10, choices=StatusChoices.choices, blank=True, null=True
-    )
+    origin = models.CharField(max_length=100)
+    platform = models.CharField(max_length=100)
+    compatibles = ArrayField(models.TextField(), null=True)
     start_time = models.IntegerField()
-    is_boot = models.BooleanField(default=False)
 
-    class Meta:
-        db_table = "new_test"
-        unique_together = ("test_id", "build_id")
-
-
-class BuildStatusByHardware(models.Model):
-    hardware_origin = models.CharField(max_length=100)
-    hardware_platform = models.CharField(max_length=100)
-    build_id = models.TextField()
+    # build status
     build_pass = models.IntegerField(default=0)
     build_failed = models.IntegerField(default=0)
     build_inc = models.IntegerField(default=0)
 
+    # boot status
+    boot_pass = models.IntegerField(default=0)
+    boot_failed = models.IntegerField(default=0)
+    boot_inc = models.IntegerField(default=0)
+
+    # test status
+    test_pass = models.IntegerField(default=0)
+    test_failed = models.IntegerField(default=0)
+    test_inc = models.IntegerField(default=0)
+
     class Meta:
-        db_table = "build_status_by_hardware"
-        unique_together = ("hardware_origin", "hardware_platform", "build_id")
+        db_table = "hardware_status"
+        unique_together = ("checkout_id", "origin", "platform")
+
+
+class LatestCheckout(models.Model):
+    checkout_id = models.TextField(primary_key=True)
+    origin = models.CharField(max_length=100)
+    tree_name = models.TextField()
+    git_repository_url = models.TextField()
+    git_repository_branch = models.TextField(null=True, blank=True)
+    start_time = models.IntegerField()
+
+    class Meta:
+        db_table = "latest_checkout"
+        unique_together = (
+            "origin",
+            "tree_name",
+            "git_repository_url",
+            "git_repository_branch",
+        )
+
+
+class PendingBuild(models.Model):
+    id = models.TextField(primary_key=True)
+    checkout_id = models.TextField()
+    status = models.CharField(
+        max_length=10, choices=StatusChoices.choices, blank=True, null=True
+    )
+
+    class Meta:
+        db_table = "pending_build"
+
+
+class PendingTest(models.Model):
+    id = models.TextField(primary_key=True)
+    origin = models.CharField(max_length=100)
+    platform = models.CharField(max_length=100)
+    compatible = ArrayField(models.TextField(), null=True)
+    build_id = models.TextField()
+    status = models.CharField(
+        max_length=10, choices=StatusChoices.choices, blank=True, null=True
+    )
+
+    class Meta:
+        db_table = "pending_test"

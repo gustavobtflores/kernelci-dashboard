@@ -1,220 +1,256 @@
 from datetime import datetime
-import math
+
 
 from django.db import connection
-
 from kernelCI_app.constants.general import MAESTRO_DUMMY_BUILD_PREFIX
 from kernelCI_app.constants.ingester import INGEST_BATCH_SIZE
 from kernelCI_app.models import (
-    BuildStatusByHardware,
     Builds,
-    NewBuild,
-    NewTest,
+    Checkouts,
+    HardwareStatus,
+    PendingBuild,
+    PendingTest,
     Tests,
 )
 from kernelCI_app.utils import is_boot
 
-
-def ceil_to_next_half_hour(dt_input: str) -> int:
-    half_hour_in_seconds = 1800
-    timestamp = datetime.fromisoformat(dt_input).timestamp()
-    return math.ceil(timestamp / half_hour_in_seconds) * half_hour_in_seconds
+separated_statuses = ("PASS", "FAIL")
 
 
-def convert_test(t: Tests) -> NewTest:
-    is_boot_test = is_boot(t.path)
-    start_time = ceil_to_next_half_hour(t.start_time)
-    return NewTest(
-        test_id=t.id,
+def date_to_timestamp(dt_input: str) -> int:
+    return int(datetime.fromisoformat(dt_input).timestamp())
+
+
+def convert_test(t: Tests) -> PendingTest:
+    return PendingTest(
+        id=t.id,
+        origin=t.origin,
+        platform=t.environment_misc.get("platform"),
+        compatible=t.environment_compatible,
         build_id=t.build_id,
-        test_origin=t.origin,
-        test_platform=t.environment_misc.get("platform"),
-        test_compatible=t.environment_compatible,
         status=t.status,
-        is_boot=is_boot_test,
-        start_time=start_time,
     )
 
 
-def convert_to_build_status_by_hardware(test: NewTest) -> BuildStatusByHardware:
-    return BuildStatusByHardware(
-        hardware_origin=test.test_origin,
-        hardware_platform=test.test_platform,
-        build_id=test.build_id,
-    )
-
-
-def prepare_build_status_by_hardware(
-    tests: list[NewTest],
-) -> list[BuildStatusByHardware]:
-    return [convert_to_build_status_by_hardware(test) for test in tests]
-
-
-def aggregate_hardware_status_data(tests: list[NewTest]) -> dict:
-    aggregated_data = {}
-
-    for test in tests:
-        pass_count = 1 if test.status == "PASS" else 0
-        failed_count = 1 if test.status == "FAIL" else 0
-        inc_count = 1 if test.status not in ("PASS", "FAIL") else 0
-
-        key = (test.test_origin, test.test_platform, test.build_id, test.start_time)
-
-        if key not in aggregated_data:
-            aggregated_data[key] = {
-                "hardware_origin": test.test_origin,
-                "hardware_platform": test.test_platform,
-                "build_id": test.build_id,
-                "date": test.start_time,
-                "compatibles": test.test_compatible,
-                "boot_pass": 0,
-                "boot_failed": 0,
-                "boot_inc": 0,
-                "test_pass": 0,
-                "test_failed": 0,
-                "test_inc": 0,
-            }
-
-        if aggregated_data[key]["compatibles"] is None and test.test_compatible:
-            aggregated_data[key]["compatibles"] = test.test_compatible
-
-        if test.is_boot:
-            aggregated_data[key]["boot_pass"] += pass_count
-            aggregated_data[key]["boot_failed"] += failed_count
-            aggregated_data[key]["boot_inc"] += inc_count
-        else:
-            aggregated_data[key]["test_pass"] += pass_count
-            aggregated_data[key]["test_failed"] += failed_count
-            aggregated_data[key]["test_inc"] += inc_count
-
-    return aggregated_data
-
-
-def convert_build(b: Builds) -> NewBuild:
-    return NewBuild(
-        build_id=b.id,
+def convert_build(b: Builds) -> PendingBuild:
+    return PendingBuild(
+        id=b.id,
         checkout_id=b.checkout_id,
-        build_origin=b.origin,
         status=b.status,
     )
 
 
-def aggregate_builds_status(builds_instances: list[Builds]) -> None:
-    builds_filtered = (
-        b for b in builds_instances if not b.id.startswith(MAESTRO_DUMMY_BUILD_PREFIX)
-    )
-
-    builds_to_insert = list(convert_build(b) for b in builds_filtered)
-
-    build_ids_to_insert = [b.build_id for b in builds_to_insert]
-    existing_build_ids = set(
-        NewBuild.objects.filter(build_id__in=build_ids_to_insert).values_list(
-            "build_id", flat=True
+def aggregate_checkouts(checkouts_instances: list[Checkouts]) -> None:
+    values = [
+        (
+            checkout.id,
+            checkout.origin,
+            checkout.tree_name,
+            checkout.git_repository_url,
+            checkout.git_repository_branch,
+            date_to_timestamp(checkout.start_time),
         )
-    )
-
-    new_builds_only = [
-        b for b in builds_to_insert if b.build_id not in existing_build_ids
+        for checkout in checkouts_instances
     ]
 
-    if new_builds_only:
-        NewBuild.objects.bulk_create(
-            new_builds_only,
-            batch_size=INGEST_BATCH_SIZE,
-            ignore_conflicts=True,
-        )
-
-        build_status_map = {build.build_id: build.status for build in new_builds_only}
-
-        build_statuses_by_hardware = BuildStatusByHardware.objects.filter(
-            build_id__in=build_status_map.keys()
-        )
-
-        updated_records = []
-        for build_status in build_statuses_by_hardware:
-            status = build_status_map[build_status.build_id]
-
-            build_status.build_pass = 1 if status == "PASS" else 0
-            build_status.build_failed = 1 if status == "FAIL" else 0
-            build_status.build_inc = 1 if status not in ("PASS", "FAIL") else 0
-
-            updated_records.append(build_status)
-
-        if updated_records:
-            BuildStatusByHardware.objects.bulk_update(
-                updated_records,
-                ["build_pass", "build_failed", "build_inc"],
-                batch_size=INGEST_BATCH_SIZE,
+    modified_checkout_ids = []
+    with connection.cursor() as cursor:
+        for value_tuple in values:
+            cursor.execute(
+                """
+                INSERT INTO latest_checkout (
+                    checkout_id, origin, tree_name,
+                    git_repository_url, git_repository_branch, start_time
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (origin, tree_name, git_repository_url, git_repository_branch)
+                DO UPDATE SET
+                    start_time = EXCLUDED.start_time,
+                    checkout_id = EXCLUDED.checkout_id
+                WHERE latest_checkout.start_time < EXCLUDED.start_time
+                RETURNING checkout_id
+                """,
+                value_tuple,
             )
+            result = cursor.fetchone()
+            if result:
+                modified_checkout_ids.append(result[0])
+
+    print(
+        f"executed {len(values)} rows, "
+        f"modified {len(modified_checkout_ids)} checkout IDs: {modified_checkout_ids}"
+    )
+
+
+def aggregate_builds_status(builds_instances: list[Builds]) -> None:
+    builds_to_insert = [
+        convert_build(b)
+        for b in builds_instances
+        if not b.id.startswith(MAESTRO_DUMMY_BUILD_PREFIX)
+    ]
+
+    if not builds_to_insert:
+        return
+
+    created_builds = PendingBuild.objects.bulk_create(
+        builds_to_insert,
+        batch_size=INGEST_BATCH_SIZE,
+        ignore_conflicts=True,
+    )
+
+    print(f"inserted {len(created_builds)} pending builds")
 
 
 def aggregate_tests_status(tests_instances: list[Tests]) -> None:
-    tests_filtered = (
-        t
+    tests_to_insert = [
+        convert_test(t)
         for t in tests_instances
         if t.environment_misc and t.environment_misc.get("platform")
-    )
-    tests_to_insert = list(convert_test(t) for t in tests_filtered)
+    ]
 
-    test_ids_to_insert = [t.test_id for t in tests_to_insert]
-    existing_test_ids = set(
-        NewTest.objects.filter(test_id__in=test_ids_to_insert).values_list(
-            "test_id", flat=True
-        )
-    )
+    if not tests_to_insert:
+        return
 
-    new_tests_only = [t for t in tests_to_insert if t.test_id not in existing_test_ids]
-
-    NewTest.objects.bulk_create(
+    created_tests = PendingTest.objects.bulk_create(
         tests_to_insert,
         batch_size=INGEST_BATCH_SIZE,
         ignore_conflicts=True,
     )
 
-    build_status_by_hardware = prepare_build_status_by_hardware(new_tests_only)
-    BuildStatusByHardware.objects.bulk_create(
-        build_status_by_hardware,
-        batch_size=INGEST_BATCH_SIZE,
-        ignore_conflicts=True,
-    )
+    print(f"inserted {len(created_tests)} pending tests")
 
-    aggregated_data = aggregate_hardware_status_data(new_tests_only)
 
-    with connection.cursor() as cursor:
-        if aggregated_data:
-            insert_query = """
-                INSERT INTO hardware_status (
-                    hardware_origin, hardware_platform, build_id, date, compatibles,
-                    boot_pass, boot_failed, boot_inc,
-                    test_pass, test_failed, test_inc
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (hardware_origin, hardware_platform, build_id, date)
-                DO UPDATE SET
-                    compatibles = COALESCE(hardware_status.compatibles, EXCLUDED.compatibles),
-                    boot_pass = hardware_status.boot_pass + EXCLUDED.boot_pass,
-                    boot_failed = hardware_status.boot_failed + EXCLUDED.boot_failed,
-                    boot_inc = hardware_status.boot_inc + EXCLUDED.boot_inc,
-                    test_pass = hardware_status.test_pass + EXCLUDED.test_pass,
-                    test_failed = hardware_status.test_failed + EXCLUDED.test_failed,
-                    test_inc = hardware_status.test_inc + EXCLUDED.test_inc
-            """
+def aggregate_all(
+    checkouts_instances: list[Checkouts],
+    builds_instances: list[Builds],
+    tests_instances: list[Tests],
+) -> None:
+    builds_filtered = [
+        b for b in builds_instances if not b.id.startswith(MAESTRO_DUMMY_BUILD_PREFIX)
+    ]
+    tests_filtered = [
+        t
+        for t in tests_instances
+        if t.environment_misc and t.environment_misc.get("platform")
+    ]
 
-            values = [
-                (
-                    data["hardware_origin"],
-                    data["hardware_platform"],
-                    data["build_id"],
-                    data["date"],
-                    data["compatibles"],
-                    data["boot_pass"],
-                    data["boot_failed"],
-                    data["boot_inc"],
-                    data["test_pass"],
-                    data["test_failed"],
-                    data["test_inc"],
-                )
-                for data in aggregated_data.values()
-            ]
+    checkouts_by_id = {c.id: c for c in checkouts_instances}
+    builds_by_id = {b.id: b for b in builds_filtered}
+    builds_by_checkout_id = {}
 
-            cursor.executemany(insert_query, values)
+    for build in builds_filtered:
+        builds_by_checkout_id.setdefault(build.checkout_id, []).append(build)
+
+    tests_by_build_id = {}
+    for test in tests_filtered:
+        tests_by_build_id.setdefault(test.build_id, []).append(test)
+
+    pending_builds = []
+    pending_tests = []
+
+    hardware_status_data = {}
+
+    for checkout in checkouts_instances:
+        checkout_id = checkout.id
+        checkout_start_time = date_to_timestamp(checkout.start_time)
+
+        related_builds = builds_by_checkout_id.get(checkout_id, [])
+
+        for build in related_builds:
+            related_tests = tests_by_build_id.get(build.id, [])
+
+            build_pass = 1 if build.status == "PASS" else 0
+            build_failed = 1 if build.status == "FAIL" else 0
+            build_inc = 1 if build.status not in separated_statuses else 0
+
+            build_hardware_keys = set()
+
+            for test in related_tests:
+                platform = test.environment_misc.get("platform")
+                origin = test.origin
+                key = (checkout_id, origin, platform)
+                build_hardware_keys.add(key)
+
+                if key not in hardware_status_data:
+                    hardware_status_data[key] = {
+                        "checkout_id": checkout_id,
+                        "origin": origin,
+                        "platform": platform,
+                        "compatibles": test.environment_compatible,
+                        "start_time": checkout_start_time,
+                        "build_pass": 0,
+                        "build_failed": 0,
+                        "build_inc": 0,
+                        "boot_pass": 0,
+                        "boot_failed": 0,
+                        "boot_inc": 0,
+                        "test_pass": 0,
+                        "test_failed": 0,
+                        "test_inc": 0,
+                    }
+
+                status_record = hardware_status_data[key]
+
+                test_pass = 1 if test.status == "PASS" else 0
+                test_failed = 1 if test.status == "FAIL" else 0
+                test_inc = 1 if test.status not in separated_statuses else 0
+
+                if is_boot(test.path):
+                    status_record["boot_pass"] += test_pass
+                    status_record["boot_failed"] += test_failed
+                    status_record["boot_inc"] += test_inc
+                else:
+                    status_record["test_pass"] += test_pass
+                    status_record["test_failed"] += test_failed
+                    status_record["test_inc"] += test_inc
+
+            for key in build_hardware_keys:
+                status_record["build_pass"] += build_pass
+                status_record["build_failed"] += build_failed
+                status_record["build_inc"] += build_inc
+
+    for build in builds_filtered:
+        if build.checkout_id not in checkouts_by_id:
+            pending_builds.append(convert_build(build))
+
+    for test in tests_filtered:
+        if test.build_id not in builds_by_id:
+            pending_tests.append(convert_test(test))
+
+    if pending_builds:
+        PendingBuild.objects.bulk_create(
+            pending_builds,
+            batch_size=INGEST_BATCH_SIZE,
+            ignore_conflicts=True,
+        )
+        print(f"inserted {len(pending_builds)} pending builds")
+
+    if pending_tests:
+        PendingTest.objects.bulk_create(
+            pending_tests,
+            batch_size=INGEST_BATCH_SIZE,
+            ignore_conflicts=True,
+        )
+        print(f"inserted {len(pending_tests)} pending tests")
+
+    if hardware_status_data:
+        hardware_status_records = [
+            HardwareStatus(**data) for data in hardware_status_data.values()
+        ]
+        HardwareStatus.objects.bulk_create(
+            hardware_status_records,
+            batch_size=INGEST_BATCH_SIZE,
+            ignore_conflicts=True,
+        )
+        print(f"inserted {len(hardware_status_records)} hardware status records")
+
+
+def run_all_aggregations(
+    checkouts_instances: list[Checkouts],
+    builds_instances: list[Builds],
+    tests_instances: list[Tests],
+) -> None:
+    aggregate_checkouts(checkouts_instances)
+    aggregate_all(checkouts_instances, builds_instances, tests_instances)
+    # aggregate_builds_status(builds_instances)
+    # aggregate_tests_status(tests_instances)
