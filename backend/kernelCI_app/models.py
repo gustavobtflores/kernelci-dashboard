@@ -15,6 +15,12 @@ class StatusChoices(models.TextChoices):
     DONE = "DONE"
 
 
+class SimplifiedStatusChoices(models.TextChoices):
+    PASS = "P"
+    FAIL = "F"
+    INCOMPLETE = "I"
+
+
 class Issues(models.Model):
     field_timestamp = models.DateTimeField(
         db_column="_timestamp", blank=True, null=True
@@ -291,9 +297,7 @@ class LatestCheckout(models.Model):
 class PendingBuild(models.Model):
     build_id = models.TextField(primary_key=True)
     checkout_id = models.TextField()
-    status = models.CharField(
-        max_length=10, choices=StatusChoices.choices, blank=True, null=True
-    )
+    status = models.CharField(max_length=1, choices=SimplifiedStatusChoices.choices)
 
     class Meta:
         db_table = "pending_build"
@@ -305,9 +309,7 @@ class PendingTest(models.Model):
     platform = models.CharField(max_length=100)
     compatible = ArrayField(models.TextField(), null=True)
     build_id = models.TextField()
-    status = models.CharField(
-        max_length=10, choices=StatusChoices.choices, blank=True, null=True
-    )
+    status = models.CharField(max_length=1, choices=SimplifiedStatusChoices.choices)
     is_boot = models.BooleanField()
 
     class Meta:
