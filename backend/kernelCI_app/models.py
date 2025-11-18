@@ -235,7 +235,7 @@ class HardwareStatus(models.Model):
     origin = models.CharField(max_length=100)
     platform = models.CharField(max_length=100)
     compatibles = ArrayField(models.TextField(), null=True)
-    start_time = models.IntegerField()
+    start_time = models.DateTimeField()
 
     # build status
     build_pass = models.IntegerField(default=0)
@@ -254,29 +254,42 @@ class HardwareStatus(models.Model):
 
     class Meta:
         db_table = "hardware_status"
-        unique_together = ("checkout_id", "origin", "platform")
+        unique_together = ("origin", "platform", "checkout_id")
+        indexes = [
+            models.Index(fields=["origin", "start_time"], name="hw_status_origin_time"),
+            models.Index(fields=["checkout_id"], name="hw_status_checkout_id"),
+        ]
 
 
 class LatestCheckout(models.Model):
-    checkout_id = models.TextField(primary_key=True)
+    checkout_id = models.TextField()
     origin = models.CharField(max_length=100)
     tree_name = models.TextField()
     git_repository_url = models.TextField()
     git_repository_branch = models.TextField(null=True, blank=True)
-    start_time = models.IntegerField()
+    start_time = models.DateTimeField()
 
     class Meta:
         db_table = "latest_checkout"
-        unique_together = (
-            "origin",
-            "tree_name",
-            "git_repository_url",
-            "git_repository_branch",
-        )
+        constraints = [
+            models.UniqueConstraint(
+                fields=[
+                    "origin",
+                    "tree_name",
+                    "git_repository_url",
+                    "git_repository_branch",
+                ],
+                name="latest_checkout_unique",
+                nulls_distinct=False,
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["checkout_id"], name="lc_checkout_id"),
+        ]
 
 
 class PendingBuild(models.Model):
-    id = models.TextField(primary_key=True)
+    build_id = models.TextField(primary_key=True)
     checkout_id = models.TextField()
     status = models.CharField(
         max_length=10, choices=StatusChoices.choices, blank=True, null=True
@@ -287,7 +300,7 @@ class PendingBuild(models.Model):
 
 
 class PendingTest(models.Model):
-    id = models.TextField(primary_key=True)
+    test_id = models.TextField(primary_key=True)
     origin = models.CharField(max_length=100)
     platform = models.CharField(max_length=100)
     compatible = ArrayField(models.TextField(), null=True)
@@ -295,6 +308,7 @@ class PendingTest(models.Model):
     status = models.CharField(
         max_length=10, choices=StatusChoices.choices, blank=True, null=True
     )
+    is_boot = models.BooleanField()
 
     class Meta:
         db_table = "pending_test"
