@@ -241,21 +241,16 @@ def db_worker(stop_event: threading.Event) -> None:  # noqa: C901
                     incidents_buf.extend(inst["incidents"])
 
                 if buffered_total() >= INGEST_BATCH_SIZE:
-                    checkouts_buf_copy = checkouts_buf.copy()
-                    builds_buf_copy = builds_buf.copy()
-                    tests_buf_copy = tests_buf.copy()
-
+                    run_all_aggregations(
+                        checkouts_instances=checkouts_buf,
+                        tests_instances=tests_buf,
+                    )
                     flush_buffers(
                         issues_buf=issues_buf,
                         checkouts_buf=checkouts_buf,
                         builds_buf=builds_buf,
                         tests_buf=tests_buf,
                         incidents_buf=incidents_buf,
-                    )
-                    run_all_aggregations(
-                        checkouts_instances=checkouts_buf_copy,
-                        builds_instances=builds_buf_copy,
-                        tests_instances=tests_buf_copy,
                     )
                     last_flush_ts = time.time()
 
@@ -289,11 +284,10 @@ def db_worker(stop_event: threading.Event) -> None:  # noqa: C901
                             buffered_total(),
                         )
                     )
-                # Save copies of buffers before flush_buffers clears them
-                checkouts_buf_copy = checkouts_buf.copy()
-                builds_buf_copy = builds_buf.copy()
-                tests_buf_copy = tests_buf.copy()
-
+                run_all_aggregations(
+                    checkouts_instances=checkouts_buf,
+                    tests_instances=tests_buf,
+                )
                 flush_buffers(
                     issues_buf=issues_buf,
                     checkouts_buf=checkouts_buf,
@@ -301,33 +295,24 @@ def db_worker(stop_event: threading.Event) -> None:  # noqa: C901
                     tests_buf=tests_buf,
                     incidents_buf=incidents_buf,
                 )
-                run_all_aggregations(
-                    checkouts_instances=checkouts_buf_copy,
-                    builds_instances=builds_buf_copy,
-                    tests_instances=tests_buf_copy,
-                )
                 last_flush_ts = time.time()
             continue
         except Exception as e:
             logger.error("Unexpected error in db_worker: %s", e)
 
     # Final flush after loop ends
-    # Save copies of buffers before flush_buffers clears them
-    checkouts_buf_copy = checkouts_buf.copy()
-    builds_buf_copy = builds_buf.copy()
-    tests_buf_copy = tests_buf.copy()
-
+    # Run aggregations before flushing since they only read from objects
+    # and flush_buffers only clears the lists, not the objects
+    run_all_aggregations(
+        checkouts_instances=checkouts_buf,
+        tests_instances=tests_buf,
+    )
     flush_buffers(
         issues_buf=issues_buf,
         checkouts_buf=checkouts_buf,
         builds_buf=builds_buf,
         tests_buf=tests_buf,
         incidents_buf=incidents_buf,
-    )
-    run_all_aggregations(
-        checkouts_instances=checkouts_buf_copy,
-        builds_instances=builds_buf_copy,
-        tests_instances=tests_buf_copy,
     )
 
 

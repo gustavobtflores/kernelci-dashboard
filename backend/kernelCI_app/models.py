@@ -294,17 +294,8 @@ class LatestCheckout(models.Model):
         ]
 
 
-class PendingBuild(models.Model):
-    build_id = models.TextField(primary_key=True)
-    checkout_id = models.TextField()
-    status = models.CharField(max_length=1, choices=SimplifiedStatusChoices.choices)
-
-    class Meta:
-        db_table = "pending_build"
-
-
 class PendingTest(models.Model):
-    test_id = models.TextField(primary_key=True)
+    test_id = models.TextField(unique=True)
     origin = models.CharField(max_length=100)
     platform = models.CharField(max_length=100)
     compatible = ArrayField(models.TextField(), null=True)
@@ -314,3 +305,20 @@ class PendingTest(models.Model):
 
     class Meta:
         db_table = "pending_test"
+
+
+class HardwareStatusEntityType(models.TextChoices):
+    TEST = "T"
+    BUILD = "B"
+
+
+class ProcessedHardwareStatus(models.Model):
+    hardware_key = models.BinaryField()
+    entity_id = models.TextField()
+    entity_type = models.CharField(
+        max_length=1, choices=HardwareStatusEntityType.choices
+    )
+
+    class Meta:
+        db_table = "processed_hardware_status"
+        unique_together = ("hardware_key", "entity_id", "entity_type")
