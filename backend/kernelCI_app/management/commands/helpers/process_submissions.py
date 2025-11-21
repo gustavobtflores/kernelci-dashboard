@@ -74,20 +74,18 @@ def flatten_dict_specific(target: dict[str, Any], target_fields: list[str]):
 
     separator = "_"
 
-    flattened_dict = target.copy()
-    for first_key, value in target.items():
-        if first_key in target_fields:
+    flattened_dict = {k: v for k, v in target.items() if k not in target_fields}
+
+    for field in target_fields:
+        if field in target:
+            value = target[field]
             if isinstance(value, dict):
-                for (
-                    inner_key,
-                    real_value,
-                ) in value.items():
-                    merged_key = separator.join([first_key, inner_key])
+                for inner_key, real_value in value.items():
+                    merged_key = separator.join([field, inner_key])
                     flattened_dict[merged_key] = real_value
-                del flattened_dict[first_key]
             else:
-                print(f"Target key {first_key} is not a dict")
-                continue
+                # logger.warning(f"Target key {field} is not a dict")
+                pass
 
     return flattened_dict
 

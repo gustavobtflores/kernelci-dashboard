@@ -29,6 +29,15 @@ CACHE_LOGS_SIZE_LIMIT = int(os.environ.get("CACHE_LOGS_SIZE_LIMIT", 100000))
 
 TREES_FILE = "/app/trees.yaml"
 
+try:
+    # Default to CPU count + 4, but minimum 5
+    default_workers = (os.cpu_count() or 1) + 4
+    INGEST_MAX_WORKERS = int(os.environ.get("INGEST_MAX_WORKERS", str(default_workers)))
+except (ValueError, TypeError):
+    default_workers = (os.cpu_count() or 1) + 4
+    logger.warning(f"Invalid INGEST_MAX_WORKERS, using default {default_workers}")
+    INGEST_MAX_WORKERS = default_workers
+
 
 # Batching and backpressure controls
 try:

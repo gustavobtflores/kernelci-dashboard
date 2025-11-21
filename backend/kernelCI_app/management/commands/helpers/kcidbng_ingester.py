@@ -1,6 +1,5 @@
 from os import DirEntry
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import json
 import logging
 import os
 from queue import Queue, Empty
@@ -10,6 +9,7 @@ from kernelCI_app.constants.ingester import (
     INGEST_FLUSH_TIMEOUT_SEC,
     INGEST_QUEUE_MAXSIZE,
     VERBOSE,
+    INGEST_MAX_WORKERS,
 )
 import threading
 import time
@@ -21,7 +21,7 @@ from kernelCI_app.management.commands.helpers.log_excerpt_utils import (
     extract_log_excerpt,
 )
 import kcidb_io
-from django.db import transaction
+import orjson
 from kernelCI_app.models import Issues, Checkouts, Builds, Tests, Incidents
 
 from kernelCI_app.management.commands.helpers.process_submissions import (
@@ -42,7 +42,7 @@ class SubmissionMetadata(TypedDict):
 logger = logging.getLogger("ingester")
 
 # Thread-safe queue for database operations (bounded for backpressure)
-db_queue = Queue(maxsize=INGEST_QUEUE_MAXSIZE)
+db_queue: Queue = Queue(maxsize=INGEST_QUEUE_MAXSIZE)
 db_lock = threading.Lock()
 
 
@@ -79,7 +79,7 @@ def prepare_file_data(
         if VERBOSE:
             logger.info("File %s is empty, skipping, deleting", file.path)
         os.remove(file.path)
-        return None, None
+        return None, {}
 
     start_time = time.time()
     if VERBOSE:
@@ -87,13 +87,16 @@ def prepare_file_data(
 
     try:
         with open(file.path, "r") as f:
-            data = json.loads(f.read())
+            data = orjson.loads(f.read())
 
         # These operations can be done in parallel (especially extract_log_excerpt)
         if CONVERT_LOG_EXCERPT:
             extract_log_excerpt(data)
         standardize_tree_names(data, tree_names)
-        kcidb_io.schema.V5_3.validate(data)
+
+        # kcidb_io.schema.V5_3.upgrade() internally checks for compatibility and upgrades if needed.
+        # It raises jsonschema.exceptions.ValidationError if data doesn't adhere to this or previous versions.
+        # So we can just call upgrade() and if it succeeds, the data is valid V5.3.
         kcidb_io.schema.V5_3.upgrade(data)
 
         processing_time = time.time() - start_time
@@ -155,13 +158,22 @@ def flush_buffers(
     # Insert in dependency-safe order
     flush_start = time.time()
     try:
-        # Single transaction for all tables in the flush
-        with transaction.atomic():
-            consume_buffer(issues_buf, "issues")
-            consume_buffer(checkouts_buf, "checkouts")
-            consume_buffer(builds_buf, "builds")
-            consume_buffer(tests_buf, "tests")
-            consume_buffer(incidents_buf, "incidents")
+        # Parallelize bulk_create calls since we don't enforce DB constraints
+        # and performance is critical here.
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [
+                executor.submit(consume_buffer, issues_buf, "issues"),
+                executor.submit(consume_buffer, checkouts_buf, "checkouts"),
+                executor.submit(consume_buffer, builds_buf, "builds"),
+                executor.submit(consume_buffer, tests_buf, "tests"),
+                executor.submit(consume_buffer, incidents_buf, "incidents"),
+            ]
+            # Wait for all to complete and check for exceptions
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    logger.error("Error during parallel flush: %s", e)
     except Exception as e:
         logger.error("Error during bulk_create flush: %s", e)
     finally:
@@ -336,7 +348,7 @@ def ingest_submissions_parallel(  # noqa: C901 - orchestrator with IO + threadin
     tree_names: dict[str, str],
     archive_dir: str,
     failed_dir: str,
-    max_workers: int = 5,
+    max_workers: int = INGEST_MAX_WORKERS,
 ) -> None:
     """
     Ingest submissions in parallel using ThreadPoolExecutor for I/O operations
