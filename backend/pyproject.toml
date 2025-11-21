@@ -22,7 +22,8 @@ jinja2 = "^3.1.5"
 django-crontab = "^0.7.1"
 django-prometheus = "^2.3.1"
 redis = {extras = ["hiredis"], version = "^5.2.1"}
-kcidb_io = {git = "https://github.com/kernelci/kcidb-io.git"}
+kcidb_io = {git = "https://github.com/kernelci/kcidb-io.git", rev = "6cff0df92a282caf6a3e44eb0d2a8d2808676f2d"}
+orjson = "^3.11.4"
 
 [tool.poetry.group.dev.dependencies]
 black = "^24.4.2"
