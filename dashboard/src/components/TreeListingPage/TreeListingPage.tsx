@@ -8,11 +8,7 @@ import type {
 
 import { useTreeTable, useTreeTableFast } from '@/api/tree';
 
-import QuerySwitcher from '@/components/QuerySwitcher/QuerySwitcher';
-
 import { Toaster } from '@/components/ui/toaster';
-
-import { MemoizedSectionError } from '@/components/DetailsPages/SectionError';
 
 import { matchesRegexOrIncludes } from '@/lib/string';
 
@@ -38,7 +34,7 @@ const TreeListingPage = ({ inputFilter }: ITreeListingPage): JSX.Element => {
     error: fastError,
     isLoading: isFastLoading,
   } = useTreeTableFast();
-  const { data, error, isLoading } = useTreeTable({
+  const { data, error, status, isLoading } = useTreeTable({
     enabled: fastStatus === 'success' && !!fastData,
   });
 
@@ -108,28 +104,23 @@ const TreeListingPage = ({ inputFilter }: ITreeListingPage): JSX.Element => {
     [],
   );
 
-  if (error) {
-    return <div>Error: {error.message}</div>;
-  }
+  const actualError = fastError || error;
+  const actualStatus = actualError ? 'error' : fastStatus ?? status;
 
   return (
-    <QuerySwitcher
-      status={fastStatus}
-      data={fastData}
-      customError={
-        <MemoizedSectionError
-          isLoading={isFastLoading}
-          errorMessage={fastError?.message}
-          emptyLabel="treeListing.notFound"
-        />
-      }
-    >
+    <>
       <Toaster />
       <div className="flex flex-col gap-6">
-        <TreeTable treeTableRows={listItems} />
+        <TreeTable
+          treeTableRows={listItems}
+          status={actualStatus}
+          queryData={fastData}
+          error={actualError}
+          isLoading={isFastLoading}
+        />
       </div>
       {kcidevComponent}
-    </QuerySwitcher>
+    </>
   );
 };
 

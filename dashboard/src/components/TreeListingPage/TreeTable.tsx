@@ -14,6 +14,7 @@ import {
 } from '@tanstack/react-table';
 
 import { useCallback, useMemo, useState, type JSX } from 'react';
+import type { UseQueryResult } from '@tanstack/react-query';
 
 import { FormattedMessage } from 'react-intl';
 
@@ -59,6 +60,9 @@ import { shouldShowRelativeDate } from '@/lib/date';
 import { valueOrEmpty } from '@/lib/string';
 import { PinnedTrees } from '@/utils/constants/tables';
 import { makeTreeIdentifierKey } from '@/utils/trees';
+
+import QuerySwitcher from '@/components/QuerySwitcher/QuerySwitcher';
+import { MemoizedSectionError } from '@/components/DetailsPages/SectionError';
 
 const getLinkProps = (
   row: Row<TreeTableBody>,
@@ -366,9 +370,19 @@ const getColumns = (origin: string): ColumnDef<TreeTableBody>[] => {
 
 interface ITreeTable {
   treeTableRows: TreeTableBody[];
+  status?: UseQueryResult['status'];
+  queryData?: unknown;
+  error?: Error | null;
+  isLoading?: boolean;
 }
 
-export function TreeTable({ treeTableRows }: ITreeTable): JSX.Element {
+export function TreeTable({
+  treeTableRows,
+  status,
+  queryData,
+  error,
+  isLoading,
+}: ITreeTable): JSX.Element {
   const { origin: unsafeOrigin, listingSize } = useSearch({ strict: false });
   const origin = unsafeOrigin ?? DEFAULT_ORIGIN;
   const navigate = useNavigate({ from: '/tree' });
@@ -506,9 +520,22 @@ export function TreeTable({ treeTableRows }: ITreeTable): JSX.Element {
           <PaginationButtons table={table} className="pl-4" />
         </div>
       </div>
-      <BaseTable headerComponents={tableHeaders}>
-        <TableBody>{tableBody}</TableBody>
-      </BaseTable>
+      <QuerySwitcher
+        status={status}
+        data={queryData}
+        error={error}
+        customError={
+          <MemoizedSectionError
+            isLoading={isLoading}
+            errorMessage={error?.message}
+            emptyLabel="treeListing.notFound"
+          />
+        }
+      >
+        <BaseTable headerComponents={tableHeaders}>
+          <TableBody>{tableBody}</TableBody>
+        </BaseTable>
+      </QuerySwitcher>
       <PaginationInfo
         table={table}
         intlLabel="global.trees"
