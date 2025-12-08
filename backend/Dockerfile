@@ -17,6 +17,7 @@ RUN apk update \
         libpq-dev \
         postgresql \
         curl \
+        netcat-openbsd \
     && python3 -m venv $POETRY_HOME \
     && $POETRY_HOME/bin/pip install poetry==1.8.3 \
     && ln -s $POETRY_HOME/bin/poetry /bin/poetry
@@ -24,6 +25,10 @@ RUN apk update \
 FROM backend-base
 COPY . /backend
 COPY ./utils/docker/entrypoint.sh /entrypoint.sh
+COPY ./utils/docker/workers/ingester-entrypoint.sh /ingester-entrypoint.sh
+COPY ./utils/docker/workers/file-dropper-entrypoint.sh /file-dropper-entrypoint.sh
+COPY ./utils/docker/workers/aggregator-entrypoint.sh /aggregator-entrypoint.sh
+RUN chmod +x /ingester-entrypoint.sh /file-dropper-entrypoint.sh /aggregator-entrypoint.sh
 WORKDIR /backend
 
 ARG INSTALL_DEV_DEPS=false

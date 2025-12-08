@@ -1,0 +1,82 @@
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: ingester
+      POSTGRES_PASSWORD: ingester_pass
+      POSTGRES_DB: ingester
+    ports:
+      - "5439:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  ingester:
+    build:
+      context: ./backend
+      args:
+        BACKEND_VOLUME_DIR: ${BACKEND_VOLUME_DIR:-/volume_data}
+    volumes:
+      - backend-data:${BACKEND_VOLUME_DIR:-/volume_data}
+    ports:
+      - "8001:8001"
+    entrypoint: ["/ingester-entrypoint.sh"]
+    environment:
+      - SPOOL_DIR=${SPOOL_DIR:-${BACKEND_VOLUME_DIR:-/volume_data}/submissions}
+      - TREES_FILE=${TREES_FILE:-./trees.yaml}
+      - MAX_WORKERS=${MAX_WORKERS:-5}
+      - CHECK_INTERVAL=${CHECK_INTERVAL:-5}
+      - DB_DEFAULT_HOST=db
+      - DB_DEFAULT_PORT=5432
+    depends_on:
+      - db
+    env_file:
+      - .env.backend
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f monitor_submissions || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  file_dropper:
+    build:
+      context: ./backend
+      args:
+        BACKEND_VOLUME_DIR: ${BACKEND_VOLUME_DIR:-/volume_data}
+    volumes:
+      - backend-data:${BACKEND_VOLUME_DIR:-/volume_data}
+    ports:
+      - "8002:8002"
+    entrypoint: ["/file-dropper-entrypoint.sh"]
+    environment:
+      - DROP_INTERVAL=${DROP_INTERVAL:-300}
+      - SUBMISSIONS_DIR=${SUBMISSIONS_DIR:-${BACKEND_VOLUME_DIR:-/volume_data}/submissions}
+      - SUBMISSIONS_ARCHIVE=${SUBMISSIONS_ARCHIVE:-./all_submissions.tgz}
+    depends_on:
+      - db
+    env_file:
+      - .env.backend
+    restart: unless-stopped
+
+  aggregator:
+    build:
+      context: ./backend
+      args:
+        BACKEND_VOLUME_DIR: ${BACKEND_VOLUME_DIR:-/volume_data}
+    volumes:
+      - backend-data:${BACKEND_VOLUME_DIR:-/volume_data}
+    entrypoint: ["/aggregator-entrypoint.sh"]
+    environment:
+      - AGGREGATOR_INTERVAL=${AGGREGATOR_INTERVAL:-300}
+      - AGGREGATOR_AMOUNT=${AGGREGATOR_AMOUNT:-10000}
+    depends_on:
+      - db
+      - ingester
+    env_file:
+      - .env.backend
+    restart: unless-stopped
+
+volumes:
+  backend-data:
+  postgres-data:
