@@ -1,4 +1,5 @@
 import argparse
+import shutil
 from django.core.management.base import BaseCommand
 import logging
 import time
@@ -14,7 +15,7 @@ from kernelCI_app.management.commands.helpers.file_utils import (
 from kernelCI_app.management.commands.helpers.log_excerpt_utils import (
     cache_logs_maintenance,
 )
-from prometheus_client import start_http_server
+from prometheus_client import CollectorRegistry, start_http_server, multiprocess
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,18 @@ class Command(BaseCommand):
         trees_file: str,
         **options,
     ):
-        start_http_server(INGESTER_METRICS_PORT)
+        prometheus_multiproc_dir = os.environ.get(
+            "PROMETHEUS_MULTIPROC_DIR", "/tmp/prometheus_multiproc_dir"
+        )
+
+        if os.path.exists(prometheus_multiproc_dir):
+            shutil.rmtree(prometheus_multiproc_dir)
+
+        os.makedirs(prometheus_multiproc_dir, exist_ok=True)
+        registry = CollectorRegistry()
+        multiprocess.MultiProcessCollector(registry)
+        start_http_server(INGESTER_METRICS_PORT, registry=registry)
+
         archive_dir = os.path.join(spool_dir, "archive")
         failed_dir = os.path.join(spool_dir, "failed")
 
