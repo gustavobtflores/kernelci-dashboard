@@ -1,0 +1,34 @@
+# Version control
+.git
+.gitignore
+
+# Python cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+
+# Tests and linting
+.benchmarks
+.pytest_cache
+.coveragerc
+.flake8
+test.patch
+
+# Documentation
+docs
+README.md
+
+# Local data and runtime
+data
+runtime
+volume_data
+# all_submissions.tgz
+
+# Git hooks
+pre-commit
+pre-push
+
+# Submissions JSONs
+submissions/*.json
+submissions/**/*.json

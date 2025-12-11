@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+    - name: "Default"
+      orgId: 1
+      folder: "" # The folder inside Grafana UI (empty = General)
+      type: file
+      disableDeletion: false
+      updateIntervalSeconds: 10 # Checks for file changes every 10s
+      options:
+          path: /var/lib/grafana/dashboards # We will mount our JSONs here

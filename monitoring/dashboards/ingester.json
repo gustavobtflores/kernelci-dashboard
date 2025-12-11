@@ -18,13 +18,13 @@
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
-  "id": 1,
+  "id": 2,
   "links": [],
   "panels": [
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "ef6i3x5negsu8f"
+        "uid": "PBFA97CFB590B2093"
       },
       "fieldConfig": {
         "defaults": {
@@ -111,6 +111,7 @@
         "y": 0
       },
       "id": 1,
+      "interval": "15",
       "options": {
         "legend": {
           "calcs": [],
@@ -224,7 +225,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "rate(kcidb_checkouts_total[$__rate_interval])",
+          "expr": "sum(rate(kcidb_checkouts_total[$__rate_interval])) by (origin)",
           "legendFormat": "Checkouts - {{origin}}",
           "range": true,
           "refId": "A"
@@ -234,7 +235,7 @@
             "type": "prometheus"
           },
           "editorMode": "code",
-          "expr": "rate(kcidb_tests_total[$__rate_interval])",
+          "expr": "sum(rate(kcidb_tests_total[$__rate_interval])) by (origin)",
           "hide": false,
           "instant": false,
           "legendFormat": "Tests - {{origin}}",
@@ -247,7 +248,7 @@
             "uid": "ef1wywwokay9sb"
           },
           "editorMode": "code",
-          "expr": "rate(kcidb_issues_total[$__rate_interval])",
+          "expr": "sum(rate(kcidb_issues_total[$__rate_interval])) by (origin)",
           "hide": false,
           "instant": false,
           "legendFormat": "Issues - {{origin}}",
@@ -260,7 +261,7 @@
             "uid": "ef1wywwokay9sb"
           },
           "editorMode": "code",
-          "expr": "rate(kcidb_builds_total[$__rate_interval])",
+          "expr": "sum(rate(kcidb_builds_total[$__rate_interval])) by (origin)",
           "hide": false,
           "instant": false,
           "legendFormat": "Builds - {{origin}}",
@@ -273,7 +274,7 @@
             "uid": "ef1wywwokay9sb"
           },
           "editorMode": "code",
-          "expr": "rate(kcidb_incidents_total[$__rate_interval])",
+          "expr": "sum(rate(kcidb_incidents_total[$__rate_interval])) by (origin)",
           "hide": false,
           "instant": false,
           "legendFormat": "Incidents - {{origin}}",
@@ -283,6 +284,237 @@
       ],
       "title": "Items processed per origin",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 9,
+        "x": 0,
+        "y": 8
+      },
+      "id": 3,
+      "interval": "15",
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.2.0-17142428006",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "kcidb_queue_depth",
+          "legendFormat": "__auto",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Spool queue",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 50000
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 9,
+        "y": 8
+      },
+      "id": 5,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.2.0-17142428006",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "kcidb_queue_depth",
+          "legendFormat": "__auto",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Queue Depth",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "options": {
+                "result": {
+                  "color": "dark-red",
+                  "index": 0,
+                  "text": "Queue Growing"
+                },
+                "to": 0
+              },
+              "type": "range"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 3600
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 9,
+        "y": 12
+      },
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.2.0-17142428006",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "kcidb_queue_depth / -deriv(kcidb_queue_depth[1m]) > 0",
+          "legendFormat": "__auto",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "TTE (time-to-empty)",
+      "type": "stat"
     }
   ],
   "preload": false,

@@ -35,6 +35,11 @@ file_env() {
 
 file_env DB_DEFAULT_PASSWORD
 
+export PROMETHEUS_MULTIPROC_DIR=${PROMETHEUS_MULTIPROC_DIR:-/tmp/prometheus_multiproc_dir}
+
+mkdir -p $PROMETHEUS_MULTIPROC_DIR
+rm -rf $PROMETHEUS_MULTIPROC_DIR/*
+
 # Run database migrations
 echo "Running database migrations..."
 poetry run python manage.py migrate --noinput

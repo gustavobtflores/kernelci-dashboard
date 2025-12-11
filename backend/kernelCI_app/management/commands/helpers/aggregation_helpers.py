@@ -1,18 +1,16 @@
+from django.db import connections
 import time
-from typing import Sequence
+from typing import Optional, Sequence
 
-
-from django.db import connection
 from kernelCI_app.helpers.logger import out
 from kernelCI_app.models import (
     Checkouts,
     PendingTest,
-    StatusChoices,
     SimplifiedStatusChoices,
+    StatusChoices,
     Tests,
 )
 from kernelCI_app.utils import is_boot
-from typing import Optional
 
 
 def simplify_status(status: Optional[StatusChoices]) -> SimplifiedStatusChoices:
@@ -55,23 +53,24 @@ def aggregate_checkouts(checkouts_instances: Sequence[Checkouts]) -> None:
         for checkout in checkouts_instances
     ]
 
-    with connection.cursor() as cursor:
-        cursor.executemany(
-            """
-            INSERT INTO latest_checkout (
-                checkout_id, origin, tree_name,
-                git_repository_url, git_repository_branch, start_time
+    if values:
+        with connections["default"].cursor() as cursor:
+            cursor.executemany(
+                """
+                INSERT INTO latest_checkout (
+                    checkout_id, origin, tree_name,
+                    git_repository_url, git_repository_branch, start_time
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (origin, tree_name, git_repository_url, git_repository_branch)
+                DO UPDATE SET
+                    start_time = EXCLUDED.start_time,
+                    checkout_id = EXCLUDED.checkout_id
+                WHERE latest_checkout.start_time < EXCLUDED.start_time
+                """,
+                values,
             )
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT (origin, tree_name, git_repository_url, git_repository_branch)
-            DO UPDATE SET
-                start_time = EXCLUDED.start_time,
-                checkout_id = EXCLUDED.checkout_id
-            WHERE latest_checkout.start_time < EXCLUDED.start_time
-            """,
-            values,
-        )
-    out(f"inserted {len(checkouts_instances)} checkouts in {time.time() - t0:.3f}s")
+            out(f"inserted {len(checkouts_instances)} checkouts in {time.time() - t0:.3f}s")
 
 
 def aggregate_tests(

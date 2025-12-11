@@ -18,6 +18,8 @@ fi
 DROP_INTERVAL=${DROP_INTERVAL:-1800}
 SUBMISSIONS_DIR=${SUBMISSIONS_DIR:-./submissions}
 SUBMISSIONS_ARCHIVE=${SUBMISSIONS_ARCHIVE:-./all_submissions.tgz}
+MIN_FILES=${MIN_FILES:-10}
+MAX_FILES=${MAX_FILES:-100}
 
 # Verify required files exist
 if [ ! -f "$SUBMISSIONS_ARCHIVE" ]; then
@@ -74,7 +76,9 @@ echo ""
 poetry run python manage.py submissions_file_dropper \
     --interval "$DROP_INTERVAL" \
     --submissions-dir "$SUBMISSIONS_DIR" \
-    --archive-file "$SUBMISSIONS_ARCHIVE" &
+    --archive-file "$SUBMISSIONS_ARCHIVE" \
+    --min-files "$MIN_FILES" \
+    --max-files "$MAX_FILES" &
 
 WORKER_PID=$!
 echo "File dropper worker started with PID: $WORKER_PID"
