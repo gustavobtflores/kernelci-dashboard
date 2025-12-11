@@ -1,12 +1,13 @@
 import argparse
-import shutil
-from django.core.management.base import BaseCommand
 import logging
-import time
 import os
-from kernelCI_app.management.commands.helpers.kcidbng_ingester import (
-    ingest_submissions_parallel,
-)
+import shutil
+import threading
+import time
+
+from django.core.management.base import BaseCommand
+from prometheus_client import CollectorRegistry, Gauge, multiprocess, start_http_server
+
 from kernelCI_app.constants.ingester import (
     INGESTER_METRICS_PORT,
     PROMETHEUS_MULTIPROC_DIR,
@@ -15,19 +16,32 @@ from kernelCI_app.management.commands.helpers.file_utils import (
     load_tree_names,
     verify_spool_dirs,
 )
+from kernelCI_app.management.commands.helpers.kcidbng_ingester import (
+    ingest_submissions_parallel,
+)
 from kernelCI_app.management.commands.helpers.log_excerpt_utils import (
     cache_logs_maintenance,
 )
-from prometheus_client import CollectorRegistry, start_http_server, multiprocess
 
 logger = logging.getLogger(__name__)
 
 
-def check_positive_int(value) -> bool:
+def check_positive_int(value) -> int:
     ivalue = int(value)
     if ivalue <= 0:
         raise argparse.ArgumentTypeError("%s has to be greater than 0" % value)
     return ivalue
+
+
+def monitor_queue_depth(spool_dir, queue_depth_gauge):
+    while True:
+        count = 0
+        with os.scandir(spool_dir) as entries:
+            for entry in entries:
+                if entry.is_file() and entry.name.endswith(".json"):
+                    count += 1
+        queue_depth_gauge.set(count)
+        time.sleep(1)
 
 
 class Command(BaseCommand):
@@ -69,11 +83,18 @@ class Command(BaseCommand):
         trees_file: str,
         **options,
     ):
+        queue_depth_gauge = None
         if PROMETHEUS_MULTIPROC_DIR:
             if os.path.exists(PROMETHEUS_MULTIPROC_DIR):
                 shutil.rmtree(PROMETHEUS_MULTIPROC_DIR)
 
             os.makedirs(PROMETHEUS_MULTIPROC_DIR, exist_ok=True)
+            # Create the gauge AFTER the multiprocess directory is set up
+            queue_depth_gauge = Gauge(
+                "kcidb_queue_depth",
+                "Number of submissions in the queue",
+                multiprocess_mode="livemax",
+            )
             registry = CollectorRegistry()
             multiprocess.MultiProcessCollector(registry)
             start_http_server(INGESTER_METRICS_PORT, registry=registry)
@@ -81,6 +102,13 @@ class Command(BaseCommand):
             logger.warning(
                 "PROMETHEUS_MULTIPROC_DIR is not set, skipping Prometheus metrics"
             )
+
+        if queue_depth_gauge:
+            thread = threading.Thread(
+                target=monitor_queue_depth, args=(spool_dir, queue_depth_gauge)
+            )
+            thread.daemon = True
+            thread.start()
 
         archive_dir = os.path.join(spool_dir, "archive")
         failed_dir = os.path.join(spool_dir, "failed")
@@ -98,6 +126,7 @@ class Command(BaseCommand):
 
         try:
             while True:
+                json_files = []
                 # TODO: retry failed files every x cycles
                 try:
                     with os.scandir(spool_dir) as it:

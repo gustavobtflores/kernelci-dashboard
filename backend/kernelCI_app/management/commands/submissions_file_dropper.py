@@ -28,15 +28,29 @@ class Command(BaseCommand):
             default=os.path.join(os.getcwd(), "all_submissions.tgz"),
             help="Archive file containing submissions",
         )
+        parser.add_argument(
+            "--min-files",
+            type=int,
+            default=10,
+            help="Minimum number of files to drop at once",
+        )
+        parser.add_argument(
+            "--max-files",
+            type=int,
+            default=1000,
+            help="Maximum number of files to drop at once",
+        )
 
     def handle(self, *args, **options):
         interval = options["interval"]
         submissions_path = options["submissions_dir"]
         submissions_file = options["archive_file"]
+        min_files = options["min_files"]
+        max_files = options["max_files"]
 
         try:
             while True:
-                amount_to_drop = random.randint(5000, 25000)
+                amount_to_drop = random.randint(min_files, max_files)
 
                 extracted_amount = 0
                 with tarfile.open(submissions_file, "r:xz") as tar:

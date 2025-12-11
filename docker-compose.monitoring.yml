@@ -29,6 +29,8 @@ services:
             - GF_SECURITY_ADMIN_PASSWORD=admin
         volumes:
             - grafana-data:/var/lib/grafana
+            - ./monitoring/provisioning:/etc/grafana/provisioning
+            - ./monitoring/dashboards:/var/lib/grafana/dashboards
         networks:
             - monitoring
         depends_on:
