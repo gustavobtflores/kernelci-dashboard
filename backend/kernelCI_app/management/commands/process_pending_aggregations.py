@@ -3,7 +3,11 @@ import time
 from datetime import datetime
 from typing import Literal, Optional, Sequence, TypedDict, Union
 from django.core.management.base import BaseCommand
-from django.db import connection, transaction
+from django.db import (
+    connection,
+    transaction,
+    OperationalError,
+)
 from kernelCI_app.constants.general import MAESTRO_DUMMY_BUILD_PREFIX
 from kernelCI_app.helpers.logger import out
 from kernelCI_app.management.commands.helpers.aggregation_helpers import simplify_status
@@ -513,14 +517,23 @@ class Command(BaseCommand):
             out(f"Starting pending aggregation processor (interval={interval}s)...")
             try:
                 while True:
-                    processed_count = self.process_pending_batch(batch_size)
-                    if processed_count == 0:
-                        out(f"Sleeping for {interval} seconds")
+                    try:
+                        processed_count = self.process_pending_batch(batch_size)
+                        if processed_count == 0:
+                            out(f"Sleeping for {interval} seconds")
+                            time.sleep(interval)
+                    except OperationalError as e:
+                        out(f"Database connection error during batch processing: {e}")
+                        out(f"Retrying in {interval} seconds...")
                         time.sleep(interval)
             except KeyboardInterrupt:
                 out("Stopping pending aggregation processor...")
         else:
-            self.process_pending_batch(batch_size)
+            try:
+                self.process_pending_batch(batch_size)
+            except OperationalError as e:
+                out(f"Database connection error during batch processing: {e}")
+                raise
 
     def _delete_ready_builds(self, *, ready_builds: Sequence[PendingBuilds]) -> int:
         """
