@@ -13,6 +13,100 @@ secrets:
         file: ./backend/runtime/secrets/postgres_password_secret
 
 services:
+    backend:
+        container_name: dashboard_backend_service
+        build:
+            context: ./backend
+        volumes:
+            - backend-data:${BACKEND_VOLUME_DIR:-/volume_data}
+        env_file:
+            - .env.backend
+        networks:
+            - private
+            - public
+        restart: always
+        image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_REPOSITORY:-local}/dashboard-backend:${IMAGE_TAG:-latest}
+        environment:
+            - CONTAINER_MODE=backend
+        command:
+            - poetry
+            - run
+            - gunicorn
+            - kernelCI.wsgi:application
+            - --workers=5
+            - --forwarded-allow-ips=*
+            - --bind=0.0.0.0:8000
+            - --timeout=250
+        entrypoint: "./utils/docker/backend_entrypoint.sh"
+        depends_on:
+            - redis
+            - dashboard_db
+        ports:
+            - target: 8000
+              published: 8000
+              protocol: tcp
+              mode: host
+            - target: 8001
+              published: 8001
+              protocol: tcp
+              mode: host
+
+    ingester:
+        container_name: dashboard_ingester_service
+        build:
+            context: ./backend
+        volumes:
+            - backend-data:${BACKEND_VOLUME_DIR:-/volume_data} # Directory of the tree names file and other data
+            - ${INGESTER_SPOOL_DIR}:/app/spool                 # Directory for ingester to monitor
+        env_file:
+            - .env.ingester
+        networks:
+            - private
+            - public
+        environment:
+            # Pass down the variable from .env to inside the container
+            - INGESTER_METRICS_PORT=${INGESTER_METRICS_PORT:-8002}
+        command:
+            - poetry
+            - run
+            - python3
+            - manage.py
+            - monitor_submissions
+            - --spool-dir
+            - /app/spool
+        restart: always
+        depends_on:
+            - dashboard_db
+        ports:
+            - target: ${INGESTER_METRICS_PORT:-8002}
+              published: ${INGESTER_METRICS_PORT:-8002}
+              protocol: tcp
+              mode: host
+        profiles: ["with_commands"]
+    
+    pending_aggregations_processor:
+        container_name: pending_aggregations_processor_service
+        build:
+            context: ./backend
+        env_file:
+            - .env.pending_aggregations
+        networks:
+            - private
+            - public
+        command:
+            - poetry
+            - run
+            - python3
+            - manage.py
+            - process_pending_aggregations
+            - --loop
+            - --interval
+            - "5"
+        restart: always
+        depends_on:
+            - dashboard_db
+        profiles: ["with_commands"]
+
     dashboard_db:
         image: postgres:17
         env_file:
@@ -24,18 +118,6 @@ services:
         ports:
             - "5434:5432"
 
-    cloudsql-proxy:
-        image: gcr.io/cloudsql-docker/gce-proxy:latest
-        container_name: cloudsql-proxy
-        command: /cloud_sql_proxy --dir=/cloudsql -instances=kernelci-production:us-central1:postgresql2=tcp:0.0.0.0:5432 -credential_file=/secrets/cloudsql/application_default_credentials.json
-        ports:
-            - 5432:5432
-        volumes:
-            - ./application_default_credentials.json:/secrets/cloudsql/application_default_credentials.json
-        networks:
-            - private
-        restart: always
-
     redis:
         image: redis:8.0-M04-alpine
         restart: always
@@ -44,46 +126,17 @@ services:
         ports:
             - 6379:6379
 
-    backend:
-        build:
-            context: ./backend
-        image: ghcr.io/${IMAGE_NAME:-local}/backend:latest
-        volumes:
-            - backend-data:${BACKEND_VOLUME_DIR:-/volume_data}
-        restart: always
-        container_name: dashboard_backend_service
-        networks:
-            - private
-            - public
-        ports:
-            - target: 8000
-              published: 8000
-              protocol: tcp
-              mode: host
-            - target: 8001
-              published: 8001
-              protocol: tcp
-              mode: host
-        depends_on:
-            - cloudsql-proxy
-            - redis
-            - dashboard_db
-        secrets:
-            - postgres_password_secret
-        env_file:
-            - .env.backend
-
     dashboard:
         build:
             context: .
             dockerfile: ./dashboard/Dockerfile
-        image: ghcr.io/${IMAGE_NAME:-local}/dashboard:latest
+        image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_REPOSITORY:-local}/dashboard-frontend:${IMAGE_TAG:-latest}
         volumes:
             - static-data:/data/static
 
     proxy:
         build: ./proxy
-        image: ghcr.io/${IMAGE_NAME:-local}/proxy:latest
+        image: ${IMAGE_REGISTRY:-ghcr.io}/${IMAGE_REPOSITORY:-local}/dashboard-proxy:${IMAGE_TAG:-latest}
         restart: always
         depends_on:
             - backend
