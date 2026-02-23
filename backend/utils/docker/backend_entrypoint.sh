@@ -58,11 +58,6 @@ export DB_DEFAULT="{
 chmod +x ./utils/docker/setup-dashboard-db.sh
 ./utils/docker/setup-dashboard-db.sh
 
-if [ "$SETUP_DJANGO" = 1 ]; then
-    ./manage.py migrate --noinput
-    exit 0
-fi
-
 # Add and start cronjobs
 poetry run ./manage.py crontab add
 crond start
