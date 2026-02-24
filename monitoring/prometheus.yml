@@ -18,3 +18,8 @@ scrape_configs:
       - targets: ['host.docker.internal:8002']
     metrics_path: '/metrics/'
     scrape_interval: 1s
+  - job_name: 'kernelci-pending-aggregations-processor'
+    static_configs:
+      - targets: ['host.docker.internal:8003']
+    metrics_path: '/metrics/'
+    scrape_interval: 10s

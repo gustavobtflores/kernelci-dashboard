@@ -93,6 +93,8 @@ services:
         networks:
             - private
             - public
+        environment:
+            - PENDING_AGGREGATIONS_METRICS_PORT=${PENDING_AGGREGATIONS_METRICS_PORT:-8003}
         command:
             - poetry
             - run
@@ -105,6 +107,11 @@ services:
         restart: always
         depends_on:
             - dashboard_db
+        ports:
+            - target: 8001
+              published: ${PENDING_AGGREGATIONS_METRICS_PORT:-8003}
+              protocol: tcp
+              mode: host
         profiles: ["with_commands"]
 
     dashboard_db:

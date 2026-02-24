@@ -49,7 +49,8 @@ poetry run python manage.py runserver 0.0.0.0:8000 --noreload
 3. Add data source
 4. Select "Prometheus". URL: `http://prometheus:9090`
 5. Import Dashboard by JSON File
-6. Select: `monitoring/dashboard.json`
+6. Select: `monitoring/dashboard.json` for API metrics
+7. Select: `monitoring/aggregation_process.json` for Aggregation Process metrics
 
 ### 4. Verify Everything Works
 - **Prometheus**: http://localhost:9090 (show targets)
@@ -57,6 +58,8 @@ poetry run python manage.py runserver 0.0.0.0:8000 --noreload
 - **Metrics**: http://localhost:8001/metrics/ (show raw metrics)
 
 ## Dashboard Features
+
+### API Dashboard
 
 After importing the dashboard, you'll have:
 
@@ -68,6 +71,15 @@ After importing the dashboard, you'll have:
   - Total Calls
   - Average Response Time
   - Total Time (cumulative time per endpoint)
+
+### Aggregation Process Dashboard
+
+This dashboard provides visibility into the `process_pending_aggregations` command:
+
+- **Records Written Rate**: Rate of records written to `tree_listing`, `hardware_status`, and `processed_items` tables.
+- **Health Status**: Time since the last successful batch processing (alerts if > 5 minutes).
+- **Batch Duration Percentiles**: p50, p95, and p99 duration of batch processing.
+- **Error Rate**: Rate of errors encountered during processing.
 
 ## Implementation Details
 
