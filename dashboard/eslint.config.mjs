@@ -138,6 +138,7 @@ export default [{
                 "src/stories/**",
                 "**/*.stories*",
                 "playwright.config.ts",
+                "vite.config.ts",
             ],
         }],
 
