@@ -1,13 +1,16 @@
 import hashlib
+import os
 import signal
 import time
 from datetime import datetime
 from typing import Literal, Optional, Sequence, TypedDict, Union
+from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.db import connection, transaction
 from kernelCI_app.constants.general import MAESTRO_DUMMY_BUILD_PREFIX
 from kernelCI_app.helpers.logger import out
 from kernelCI_app.management.commands.helpers.aggregation_helpers import simplify_status
+from prometheus_client import start_http_server
 from kernelCI_app.models import (
     Builds,
     Checkouts,
@@ -15,6 +18,14 @@ from kernelCI_app.models import (
     PendingBuilds,
     ProcessedListingItems,
     SimplifiedStatusChoices,
+)
+
+from prometheus_client import Counter
+
+AGGREGATION_RECORDS_WRITTEN = Counter(
+    "aggregation_records_written_total",
+    "Total number of records written to destination tables",
+    ["table"],  # values: "tree_listing", "hardware_status", "processed_items"
 )
 
 
@@ -516,6 +527,11 @@ class Command(BaseCommand):
         loop = options["loop"]
         interval = options["interval"]
 
+        metrics_port = int(os.environ.get("PROMETHEUS_METRICS_PORT", 8001))
+        if settings.PROMETHEUS_METRICS_ENABLED:
+            start_http_server(metrics_port)
+            out(f"Prometheus metrics server started on port {metrics_port}")
+
         if loop:
             signal.signal(signal.SIGTERM, self.signal_handler)
             signal.signal(signal.SIGINT, self.signal_handler)
@@ -585,6 +601,9 @@ class Command(BaseCommand):
             f"bulk_create ProcessedListingItems: n={len(new_processed_entries)} "
             f"in {time.time() - t0:.3f}s"
         )
+        AGGREGATION_RECORDS_WRITTEN.labels(table="processed_items").inc(
+            len(new_processed_entries)
+        )
 
     def _process_tree_listing(
         self,
@@ -640,6 +659,7 @@ class Command(BaseCommand):
             )
 
         out(f"Inserted {len(values)} tree_listing records in {time.time() - t0:.3f}s")
+        AGGREGATION_RECORDS_WRITTEN.labels(table="tree_listing").inc(len(values))
 
     def _process_hardware_status(
         self,
