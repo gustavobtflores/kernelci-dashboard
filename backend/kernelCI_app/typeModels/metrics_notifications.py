@@ -14,6 +14,8 @@ class BuildIncidentsByOrigin(BaseModel):
 
 
 class MetricsReportData(BaseModel):
+    # Current interval
+    n_trees: int
     n_checkouts: int
     n_builds: int
     n_tests: int
@@ -21,3 +23,9 @@ class MetricsReportData(BaseModel):
     n_incidents: int
     build_incidents_by_origin: dict[str, BuildIncidentsByOrigin]
     lab_maps: dict[str, LabMetricsData]
+    # Previous interval (for comparison)
+    prev_n_trees: int
+    prev_n_checkouts: int
+    prev_n_builds: int
+    prev_n_tests: int
+    prev_lab_maps: dict[str, LabMetricsData]

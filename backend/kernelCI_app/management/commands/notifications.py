@@ -39,6 +39,7 @@ from kernelCI_app.queries.notifications import (
     kcidb_tests_results,
 )
 from kernelCI_app.queries.test import get_test_details_data, get_test_status_history
+from kernelCI_app.typeModels.metrics_notifications import MetricsReportData
 from kernelCI_cache.queries.notifications import (
     RESEND_INTERVAL,
     check_sent_notifications,
@@ -742,6 +743,63 @@ def generate_hardware_summary_report(
         )
 
 
+def _fmt_change(cur: int, prev: int, show_percentage: bool = True) -> str:
+    """Return a signed change string, e.g. '-246  (-17%)' or '-5'."""
+    diff = cur - prev
+    if diff == 0:
+        return "0  (0%)"
+
+    abs_formatted_diff = f"{abs(diff):,}"
+    signed_diff = f"+{abs_formatted_diff}" if diff > 0 else f"-{abs_formatted_diff}"
+
+    if show_percentage and prev != 0:
+        percentage = round((diff / prev) * 100)
+        percentage_sign = "+" if percentage > 0 else ""
+        return f"{signed_diff}  ({percentage_sign}{percentage}%)"
+
+    return signed_diff
+
+
+def compute_metrics_deltas(data: MetricsReportData) -> dict:
+    """Pre-compute all change strings for the metrics report template."""
+    new_lab_keys: set[str] = set(data.lab_maps.keys()) - set(data.prev_lab_maps.keys())
+    extinct_lab_keys: set[str] = set(data.prev_lab_maps.keys()) - set(
+        data.lab_maps.keys()
+    )
+
+    labs = {}
+    n_total_lab_curr = 0
+    n_total_lab_prev = 0
+    for lab_key, lab_values in data.lab_maps.items():
+        # Gathers change from current labs to their last week,
+        # as well as already counting part of last week's total
+        prev_lab_tests = (
+            data.prev_lab_maps[lab_key].tests if lab_key in data.prev_lab_maps else 0
+        )
+        labs[lab_key] = _fmt_change(lab_values.tests, prev_lab_tests)
+
+        n_total_lab_curr += lab_values.tests
+        n_total_lab_prev += prev_lab_tests
+
+    for lab_key in extinct_lab_keys:
+        # Gathers change from extinct labs and finishes counting last week's total
+        extinct_tests = data.prev_lab_maps[lab_key].tests
+        labs[lab_key] = _fmt_change(0, extinct_tests)
+
+        n_total_lab_prev += extinct_tests
+
+    return {
+        "n_trees": _fmt_change(data.n_trees, data.prev_n_trees, show_percentage=False),
+        "n_checkouts": _fmt_change(data.n_checkouts, data.prev_n_checkouts),
+        "n_builds": _fmt_change(data.n_builds, data.prev_n_builds),
+        "n_tests": _fmt_change(data.n_tests, data.prev_n_tests),
+        "n_total_lab_activity": _fmt_change(n_total_lab_curr, n_total_lab_prev),
+        "labs": labs,
+        "new_lab_keys": new_lab_keys,
+        "extinct_lab_keys": extinct_lab_keys,
+    }
+
+
 def generate_metrics_report(
     *,
     email_service,
@@ -759,10 +817,12 @@ def generate_metrics_report(
     start_datetime = now - timedelta(days=start_days_ago)
     end_datetime = now - timedelta(days=end_days_ago)
 
-    data = get_metrics_data(
+    data: MetricsReportData = get_metrics_data(
         start_days_ago=start_days_ago,
         end_days_ago=end_days_ago,
     )
+
+    deltas = compute_metrics_deltas(data)
 
     report = {}
     template = setup_jinja_template("metrics_report.txt.j2")
@@ -770,6 +830,7 @@ def generate_metrics_report(
         **data.model_dump(),
         start_datetime=start_datetime.strftime("%Y-%m-%d %H:%M %Z"),
         end_datetime=end_datetime.strftime("%Y-%m-%d %H:%M %Z"),
+        deltas=deltas,
     )
 
     report["title"] = "KernelCI Metrics Report - %s" % now.strftime("%Y-%m-%d %H:%M %Z")

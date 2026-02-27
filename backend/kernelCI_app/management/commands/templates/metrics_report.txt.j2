@@ -1,50 +1,92 @@
 {% extends "base.txt" %}
 {% block header %}{% endblock %}
 {% block content -%}
+{#- Helper macro: comma-format an integer -#}
+{%- macro fmt(n) -%}{{ "{:,}".format(n) }}{%- endmacro -%}
 KernelCI Metrics Summary
 ========================
 Period: {{ start_datetime }} to {{ end_datetime }}
 
 
-ACTIVITY
---------
-{{ "{:>6}".format(n_issues) }} issues
-{{ "{:>6}".format(n_incidents) }} incidents
-{{ "{:>6}".format(n_checkouts) }} checkouts
-{{ "{:>6}".format(n_builds) }} builds
-{{ "{:>6}".format(n_tests) }} tests
+  COVERAGE
+  --------
+{{ "{:<22}".format("") -}}{{ "{:<13}".format("This week") -}}{{ "{:<13}".format("Last week") }}Change
+{{ "{:<22}".format("") -}}{{ "{:<13}".format("─────────") -}}{{ "{:<13}".format("─────────") }}──────
+{{ "{:<22}".format("  Trees monitored") -}}{{ "{:<13}".format(fmt(n_trees)) -}}{{ "{:<13}".format(fmt(prev_n_trees)) }}{{ deltas.n_trees }}
+{{ "{:<22}".format("  Checkouts") -}}{{ "{:<13}".format(fmt(n_checkouts)) -}}{{ "{:<13}".format(fmt(prev_n_checkouts)) }}{{ deltas.n_checkouts }}
+{{ "{:<22}".format("  Builds") -}}{{ "{:<13}".format(fmt(n_builds)) -}}{{ "{:<13}".format(fmt(prev_n_builds)) }}{{ deltas.n_builds }}
+{{ "{:<22}".format("  Tests") -}}{{ "{:<13}".format(fmt(n_tests)) -}}{{ "{:<13}".format(fmt(prev_n_tests)) }}{{ deltas.n_tests }}
 
 
-BUILD REGRESSIONS
------------------
-Incidents are any occurrences of an issue.
-New regressions are the first incident of an issue.
+  BUILD REGRESSIONS
+  -----------------
+  A "regression" is a newly detected failure (first occurrence).
+  An "occurrence" is each subsequent hit of that same failure.
 
-Origin      Total Incidents    New Regressions
-──────────────────────────────────────────────
+{% if build_incidents_by_origin -%}
+{{ "{:<14}".format("  Origin") -}}
+{{ "{:<15}".format("Occurrences") -}}
+New regressions
+  ────────────────────────────────────────────
 {% for origin, data in build_incidents_by_origin.items() | sort -%}
-{{ "{:<12}".format(origin) -}}
-{{ "{:<19}".format(data.total) -}}
-{{ data.new_regressions }}
-{% endfor %}
+{{ "{:<14}".format("  " + origin) -}}
+{{ "{:<15}".format(fmt(data.total)) -}}
+{{ fmt(data.new_regressions) }}
+{% endfor %}  ────────────────────────────────────────────
+{{ "{:<14}".format("  Total") -}}
+{{ "{:<15}".format(fmt(build_incidents_by_origin.values() | map(attribute='total') | sum)) -}}
+{{ fmt(build_incidents_by_origin.values() | map(attribute='new_regressions') | sum) }}
+{%- else %}  No build regressions to show in this period. {%- endif %}
 
-LAB ACTIVITY
-------------
-There were {{ lab_maps | length }} labs registered. Incidents reported per lab:
 
-Origin      Lab                    Builds    Boots     Tests
-────────────────────────────────────────────────────────────
+  LAB ACTIVITY
+  ------------
+{%- set n_labs = lab_maps | length %}
+{%- set prev_n_labs = prev_lab_maps | length %}
+{%- set lab_diff = n_labs - prev_n_labs %}
+{%- if lab_diff == 0 %}
+  {{ n_labs }} labs reported results this week (unchanged from last week).
+{%- elif lab_diff > 0 %}
+  {{ n_labs }} labs reported results this week ({{ lab_diff }} more than last week).
+{%- else %}
+  {{ n_labs }} labs reported results this week ({{ lab_diff | abs }} fewer than last week).
+{%- endif %}
+
+  Labs marked with an asterisk (*) are new.
+  Labs that stopped reporting are shown with a -100% change.
+
+{% if n_labs -%}
+{{ "{:<20}".format("  Origin") -}}
+{{ "{:<25}".format("Lab") -}}
+{{ "{:<9}".format("Builds") -}}
+{{ "{:<9}".format("Boots") -}}
+{{ "{:<15}".format("Tests") -}}
+Change (tests)
+  ──────────────────────────────────────────────────────────────────────────────────────────
 {% for lab_key, lab_values in lab_maps.items() | sort -%}
-{{ "{:<12}".format(lab_values["origin"]) -}}
-{{ "{:<23}".format(lab_key) -}}
-{{ "{:<10}".format(lab_values["builds"]) -}}
-{{ "{:<10}".format(lab_values["boots"]) -}}
-{{ lab_values["tests"] }}
-{% endfor -%}
-────────────────────────────────────────────────────────────
-{{ "{:<35}".format("Total") -}}
-{{ "{:<10}".format(lab_maps.values() | map(attribute='builds') | sum) -}}
-{{ "{:<10}".format(lab_maps.values() | map(attribute='boots') | sum) -}}
-{{ lab_maps.values() | map(attribute='tests') | sum }}
+    {%- set display_name = lab_key + " *" if lab_key in deltas.new_lab_keys else lab_key -%}
+    {{ "{:<20}".format("  " + lab_values["origin"]) -}}
+    {{ "{:<25}".format(display_name) -}}
+    {{ "{:<9}".format(fmt(lab_values["builds"])) -}}
+    {{ "{:<9}".format(fmt(lab_values["boots"])) -}}
+    {{ "{:<15}".format(fmt(lab_values["tests"])) -}}
+    {{ deltas.labs.get(lab_key, "") }}
+{% endfor %}
+{%- for lab_key in deltas.extinct_lab_keys | sort -%}
+    {%- set lab_values = prev_lab_maps[lab_key] -%}
+    {{ "{:<20}".format("  " + lab_values["origin"]) -}}
+    {{ "{:<25}".format(lab_key) -}}
+    {{ "{:<9}".format(fmt(0)) -}}
+    {{ "{:<9}".format(fmt(0)) -}}
+    {{ "{:<15}".format(fmt(0)) -}}
+    {{ deltas.labs.get(lab_key, "") }}
+{% endfor %}  ──────────────────────────────────────────────────────────────────────────────────────────
+{{ "{:<45}".format("  Total") -}}
+{{ "{:<9}".format(fmt(lab_maps.values() | map(attribute='builds') | sum)) -}}
+{{ "{:<9}".format(fmt(lab_maps.values() | map(attribute='boots') | sum)) -}}
+{{ "{:<15}".format(fmt(lab_maps.values() | map(attribute='tests') | sum)) -}}
+{{ deltas.n_total_lab_activity }}
 
-{% endblock -%}
+{%- endif %}
+
+{%- endblock -%}

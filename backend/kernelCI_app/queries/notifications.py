@@ -654,13 +654,25 @@ def get_metrics_data(
             "Warning: metrics report for more than 30 days may take a long time to generate."
         )
 
+    period_length = end_days_ago - start_days_ago
+    prev_start_days_ago = start_days_ago - period_length
+    prev_end_days_ago = start_days_ago
+
     params = {
         "start_days_ago": str(start_days_ago) + " days",
         "end_days_ago": str(end_days_ago) + " days",
     }
+    prev_params = {
+        "start_days_ago": str(prev_start_days_ago) + " days",
+        "end_days_ago": str(prev_end_days_ago) + " days",
+    }
 
     total_objects_query = """
     SELECT
+        (SELECT COUNT(DISTINCT tree_name) FROM checkouts WHERE _timestamp BETWEEN
+            NOW() - INTERVAL %(start_days_ago)s
+            AND NOW() - INTERVAL %(end_days_ago)s)
+            AS n_trees,
         (SELECT COUNT(*) FROM checkouts WHERE _timestamp BETWEEN
             NOW() - INTERVAL %(start_days_ago)s
             AND NOW() - INTERVAL %(end_days_ago)s)
@@ -762,25 +774,33 @@ def get_metrics_data(
         cursor.execute(total_objects_query, params)
         total_objects_result = cursor.fetchone()
 
+        cursor.execute(total_objects_query, prev_params)
+        prev_total_objects_result = cursor.fetchone()
+
         cursor.execute(build_incidents_query, params)
         build_incidents_result = cursor.fetchall()
 
         cursor.execute(lab_summary_query, params)
         lab_summary_results = cursor.fetchall()
 
+        cursor.execute(lab_summary_query, prev_params)
+        prev_lab_summary_results = cursor.fetchall()
+
     try:
         data = MetricsReportData(
-            n_checkouts=total_objects_result[0],
-            n_builds=total_objects_result[1],
-            n_tests=total_objects_result[2],
-            n_issues=total_objects_result[3],
-            n_incidents=total_objects_result[4],
+            n_trees=total_objects_result[0],
+            n_checkouts=total_objects_result[1],
+            n_builds=total_objects_result[2],
+            n_tests=total_objects_result[3],
+            n_issues=total_objects_result[4],
+            n_incidents=total_objects_result[5],
             build_incidents_by_origin={
                 row[0]: BuildIncidentsByOrigin(
                     total=row[1],
                     new_regressions=row[2],
                 )
                 for row in build_incidents_result
+                if row[1] != 0 or row[2] != 0
             },
             lab_maps={
                 row[0]: LabMetricsData(
@@ -790,6 +810,19 @@ def get_metrics_data(
                     tests=row[4],
                 )
                 for row in lab_summary_results
+            },
+            prev_n_trees=prev_total_objects_result[0],
+            prev_n_checkouts=prev_total_objects_result[1],
+            prev_n_builds=prev_total_objects_result[2],
+            prev_n_tests=prev_total_objects_result[3],
+            prev_lab_maps={
+                row[0]: LabMetricsData(
+                    origin=row[1],
+                    builds=row[2],
+                    boots=row[3],
+                    tests=row[4],
+                )
+                for row in prev_lab_summary_results
             },
         )
     except ValidationError as e:
