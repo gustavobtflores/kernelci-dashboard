@@ -164,6 +164,93 @@ def get_current_row_data(current_row: dict) -> dict:
     return current_row_data
 
 
+def get_current_row_data_builds(current_row: tuple) -> dict:
+    """
+    All test-related fields are hardcoded to None/UNKNOWN_STRING so that
+    decide_if_is_full_row_filtered_out, decide_if_is_build_filtered_out,
+    and get_build continue to work without modification.
+    """
+    current_row_data = {
+        "test_id": None,
+        "test_origin": None,
+        "test_environment_comment": None,
+        "test_environment_misc": None,
+        "test_path": UNKNOWN_STRING,
+        "test_comment": None,
+        "test_log_url": None,
+        "test_status": NULL_STATUS,
+        "test_start_time": None,
+        "test_duration": None,
+        "test_number_value": None,
+        "test_misc": None,
+        "test_environment_compatible": UNKNOWN_STRING,
+        "test_platform": None,
+        "test_error": None,
+        "build_id": current_row[0],
+        "build_origin": current_row[1],
+        "build_comment": current_row[2],
+        "build_start_time": current_row[3],
+        "build_duration": current_row[4],
+        "build_architecture": current_row[5],
+        "build_command": current_row[6],
+        "build_compiler": current_row[7],
+        "build_config_name": current_row[8],
+        "build_config_url": current_row[9],
+        "build_log_url": current_row[10],
+        "build_status": current_row[11],
+        "build_misc": current_row[12],
+        "checkout_id": current_row[13],
+        "checkout_git_repository_url": current_row[14],
+        "checkout_git_repository_branch": current_row[15],
+        "checkout_git_commit_tags": current_row[16],
+        "checkout_origin": current_row[17],
+        "incident_id": current_row[18],
+        "incident_test_id": current_row[19],
+        "incident_present": current_row[20],
+        "issue_id": current_row[21],
+        "issue_version": current_row[22],
+        "issue_comment": current_row[23],
+        "issue_report_url": current_row[24],
+    }
+
+    if current_row_data["build_status"] is None:
+        current_row_data["build_status"] = NULL_STATUS
+    if current_row_data["build_architecture"] is None:
+        current_row_data["build_architecture"] = UNKNOWN_STRING
+    if current_row_data["build_compiler"] is None:
+        current_row_data["build_compiler"] = UNKNOWN_STRING
+    if current_row_data["build_config_name"] is None:
+        current_row_data["build_config_name"] = UNKNOWN_STRING
+    if current_row_data["issue_id"] is None and is_status_failure(
+        current_row_data["build_status"], build_fail_status_list
+    ):
+        current_row_data["issue_id"] = UNCATEGORIZED_STRING
+
+    current_row_data["build_misc"] = handle_misc(current_row_data["build_misc"])
+
+    build_misc_lab = UNKNOWN_STRING
+    if current_row_data["build_misc"] is not None:
+        build_misc_lab = current_row_data["build_misc"].get("lab", UNKNOWN_STRING)
+
+    current_row_data["history_item"] = {
+        "id": None,
+        "origin": None,
+        "status": NULL_STATUS,
+        "duration": None,
+        "path": UNKNOWN_STRING,
+        "start_time": None,
+        "environment_compatible": None,
+        "config": current_row_data["build_config_name"],
+        "log_url": None,
+        "architecture": current_row_data["build_architecture"],
+        "compiler": current_row_data["build_compiler"],
+        "environment_misc": {"platform": None},
+        "lab": build_misc_lab,
+    }
+
+    return current_row_data
+
+
 def process_tree_url(instance, row_data: dict) -> None:
     git_repository_url = row_data["checkout_git_repository_url"]
     if instance.tree_url == "" and git_repository_url is not None:

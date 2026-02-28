@@ -16,9 +16,9 @@ from kernelCI_app.helpers.treeDetails import (
     decide_if_is_build_filtered_out,
     decide_if_is_full_row_filtered_out,
     get_build,
-    get_current_row_data,
+    get_current_row_data_builds,
 )
-from kernelCI_app.queries.tree import get_tree_details_data
+from kernelCI_app.queries.tree import get_tree_data
 from kernelCI_app.typeModels.commonOpenApiParameters import (
     COMMIT_HASH_PATH_PARAM,
     GIT_BRANCH_PATH_PARAM,
@@ -57,7 +57,7 @@ class BaseTreeDetailsBuilds(APIView):
 
     def _sanitize_rows(self, rows):
         for row in rows:
-            row_data = get_current_row_data(row)
+            row_data = get_current_row_data_builds(row)
 
             is_record_filter_out = decide_if_is_full_row_filtered_out(self, row_data)
 
@@ -78,7 +78,8 @@ class BaseTreeDetailsBuilds(APIView):
         commit_hash: str,
         origin: str,
     ) -> Response:
-        rows = get_tree_details_data(
+        rows = get_tree_data(
+            data_type="builds",
             origin_param=origin,
             git_url_param=git_url,
             git_branch_param=git_branch,
@@ -95,7 +96,7 @@ class BaseTreeDetailsBuilds(APIView):
             )
 
         if len(rows) == 1:
-            row_data = get_current_row_data(current_row=rows[0])
+            row_data = get_current_row_data_builds(current_row=rows[0])
             if row_data["build_id"] is None:
                 notification = create_endpoint_notification(
                     message="Found checkout without builds",
