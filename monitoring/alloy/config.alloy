@@ -1,0 +1,43 @@
+// Discover all running Docker containers
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+// Relabel discovered targets to expose useful labels
+discovery.relabel "containers" {
+  targets = discovery.docker.containers.targets
+
+  // Strip leading slash from container name (e.g. /dashboard_backend_service → dashboard_backend_service)
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+
+  // Expose the Compose service name as a label for easy filtering in LogQL
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "compose_service"
+  }
+}
+
+// Tail logs from all discovered containers
+loki.source.docker "all_containers" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.containers.output
+  forward_to = [loki.process.add_labels.receiver]
+}
+
+// Parse Docker log format (timestamp + stream metadata) and forward to Loki
+loki.process "add_labels" {
+  stage.docker {}
+
+  forward_to = [loki.write.loki.receiver]
+}
+
+// Push logs to the local Loki instance
+loki.write "loki" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}
