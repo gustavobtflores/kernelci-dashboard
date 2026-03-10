@@ -16,10 +16,12 @@ from prometheus_client import start_http_server
 from kernelCI_app.models import (
     Builds,
     Checkouts,
+    Incidents,
     PendingTest,
     PendingBuilds,
     ProcessedListingItems,
     SimplifiedStatusChoices,
+    TestsFact,
 )
 
 from prometheus_client import Counter
@@ -492,6 +494,162 @@ def aggregate_hardware_status(
     return hardware_status_data, new_processed_entries
 
 
+FULL_STATUS_TO_COUNTER = {
+    "PASS": "pass_tests",
+    "FAIL": "fail_tests",
+    "SKIP": "skip_tests",
+    "ERROR": "error_tests",
+    "MISS": "miss_tests",
+    "DONE": "done_tests",
+}
+
+
+def _fetch_test_issues(test_ids: list[str]) -> dict[str, dict]:
+    """Bulk-fetch the first incident per test_id, returning {test_id: {issue_id, issue_version}}."""
+    issues_map: dict[str, dict] = {}
+    incidents = Incidents.objects.filter(
+        test_id__in=test_ids,
+    ).values("test_id", "issue_id", "issue_version")
+
+    for inc in incidents:
+        issues_map.setdefault(
+            inc["test_id"],
+            {
+                "issue_id": inc["issue_id"],
+                "issue_version": inc["issue_version"],
+            },
+        )
+
+    return issues_map
+
+
+def aggregate_tests_fact_rollup(
+    ready_tests: Sequence[PendingTest],
+    test_builds_by_id: dict[str, Builds],
+) -> tuple[list[tuple], dict[tuple, dict]]:
+    """
+    Build fact rows and rollup deltas from pending tests.
+    Returns (fact_values, rollup_data) without touching the database.
+    """
+    test_ids = [t.test_id for t in ready_tests]
+    issues_map = _fetch_test_issues(test_ids)
+
+    existing_fact_ids = set(
+        TestsFact.objects.filter(test_id__in=test_ids).values_list("test_id", flat=True)
+    )
+
+    fact_values: list[tuple] = []
+    rollup_data: dict[tuple, dict] = {}
+
+    for test in ready_tests:
+        try:
+            build = test_builds_by_id[test.build_id]
+        except KeyError:
+            continue
+
+        checkout = build.checkout
+        path = test.path or ""
+        path_group = path.split(".", 1)[0] if path else "-"
+        path_group = path_group or "-"
+
+        hardware_key = "Unknown"
+        if test.compatible:
+            hardware_key = test.compatible[0]
+        elif test.platform:
+            hardware_key = test.platform
+
+        issue_info = issues_map.get(test.test_id)
+        issue_id = issue_info["issue_id"] if issue_info else None
+        issue_version = issue_info["issue_version"] if issue_info else None
+        issue_uncategorized = issue_id is None and test.full_status == "FAIL"
+
+        arch = build.architecture or "Unknown"
+        compiler = build.compiler or "Unknown"
+        config = build.config_name or "Unknown"
+        is_boot = test.is_boot
+        duration_int = int(test.duration) if test.duration else None
+
+        fact_values.append(
+            (
+                test.test_id,
+                test.build_id,
+                checkout.id,
+                checkout.origin,
+                checkout.tree_name,
+                checkout.git_repository_branch,
+                checkout.git_repository_url,
+                checkout.git_commit_hash,
+                test.origin,
+                path,
+                path_group,
+                test.full_status,
+                duration_int,
+                test.start_time,
+                arch,
+                compiler,
+                config,
+                test.platform,
+                test.lab,
+                hardware_key,
+                issue_id,
+                issue_version,
+                issue_uncategorized,
+                is_boot,
+            )
+        )
+
+        if test.test_id in existing_fact_ids:
+            continue
+
+        rollup_key = (
+            checkout.origin,
+            checkout.tree_name,
+            checkout.git_repository_branch,
+            checkout.git_repository_url,
+            checkout.git_commit_hash,
+            path_group,
+            config,
+            arch,
+            compiler,
+            hardware_key,
+            test.platform,
+            test.lab,
+            test.origin,
+            issue_id,
+            issue_version,
+            issue_uncategorized,
+            is_boot,
+        )
+
+        record = rollup_data.setdefault(
+            rollup_key,
+            {
+                "pass_tests": 0,
+                "fail_tests": 0,
+                "skip_tests": 0,
+                "error_tests": 0,
+                "miss_tests": 0,
+                "done_tests": 0,
+                "null_tests": 0,
+                "total_tests": 0,
+                "duration_min": None,
+                "duration_max": None,
+            },
+        )
+
+        counter = FULL_STATUS_TO_COUNTER.get(test.full_status, "null_tests")
+        record[counter] += 1
+        record["total_tests"] += 1
+
+        if duration_int is not None:
+            if record["duration_min"] is None or duration_int < record["duration_min"]:
+                record["duration_min"] = duration_int
+            if record["duration_max"] is None or duration_int > record["duration_max"]:
+                record["duration_max"] = duration_int
+
+    return fact_values, rollup_data
+
+
 class Command(BaseCommand):
     help = """
         Process pending tests for hardware status aggregation,
@@ -855,8 +1013,17 @@ class Command(BaseCommand):
             .only(
                 "id",
                 "status",
+                "architecture",
+                "compiler",
+                "config_name",
+                "misc",
                 "checkout__id",
                 "checkout__start_time",
+                "checkout__origin",
+                "checkout__tree_name",
+                "checkout__git_repository_url",
+                "checkout__git_repository_branch",
+                "checkout__git_commit_hash",
             )
             .in_bulk(pending_test_build_ids)
         )
@@ -886,6 +1053,120 @@ class Command(BaseCommand):
             skipped_no_build,
             pending_test_count,
         )
+
+    def _process_tests_fact(self, fact_values: list[tuple]) -> None:
+        if not fact_values:
+            return
+
+        t0 = time.time()
+        with connection.cursor() as cursor:
+            cursor.executemany(
+                """
+                INSERT INTO tests_fact (
+                    test_id, build_id, checkout_id,
+                    origin, tree_name, git_repository_branch, git_repository_url,
+                    git_commit_hash,
+                    test_origin, test_path, path_group, test_status,
+                    test_duration, test_start_time,
+                    build_architecture, build_compiler, build_config_name,
+                    test_platform, test_lab, hardware_key,
+                    issue_id, issue_version, issue_uncategorized, is_boot
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s
+                )
+                ON CONFLICT (test_id) DO UPDATE SET
+                    test_status = EXCLUDED.test_status,
+                    test_duration = EXCLUDED.test_duration,
+                    test_start_time = EXCLUDED.test_start_time,
+                    issue_id = EXCLUDED.issue_id,
+                    issue_version = EXCLUDED.issue_version,
+                    issue_uncategorized = EXCLUDED.issue_uncategorized
+                """,
+                fact_values,
+            )
+        out(
+            f"Upserted {len(fact_values)} tests_fact records "
+            f"in {time.time() - t0:.3f}s"
+        )
+        AGGREGATION_RECORDS_WRITTEN.labels(table="tests_fact").inc(len(fact_values))
+
+    def _process_tests_rollup(self, rollup_data: dict[tuple, dict]) -> None:
+        if not rollup_data:
+            return
+
+        values = [
+            (
+                *key,
+                data["pass_tests"],
+                data["fail_tests"],
+                data["skip_tests"],
+                data["error_tests"],
+                data["miss_tests"],
+                data["done_tests"],
+                data["null_tests"],
+                data["total_tests"],
+                data["duration_min"],
+                data["duration_max"],
+            )
+            for key, data in rollup_data.items()
+        ]
+
+        t0 = time.time()
+        with connection.cursor() as cursor:
+            cursor.executemany(
+                """
+                INSERT INTO tests_rollup (
+                    origin, tree_name, git_repository_branch, git_repository_url,
+                    git_commit_hash,
+                    path_group, build_config_name, build_architecture, build_compiler,
+                    hardware_key, test_platform, test_lab, test_origin,
+                    issue_id, issue_version, issue_uncategorized, is_boot,
+                    pass_tests, fail_tests, skip_tests,
+                    error_tests, miss_tests, done_tests,
+                    null_tests, total_tests,
+                    duration_min, duration_max
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
+                ON CONFLICT ON CONSTRAINT tests_rollup_unique DO UPDATE SET
+                    pass_tests = tests_rollup.pass_tests + EXCLUDED.pass_tests,
+                    fail_tests = tests_rollup.fail_tests + EXCLUDED.fail_tests,
+                    skip_tests = tests_rollup.skip_tests + EXCLUDED.skip_tests,
+                    error_tests = tests_rollup.error_tests + EXCLUDED.error_tests,
+                    miss_tests = tests_rollup.miss_tests + EXCLUDED.miss_tests,
+                    done_tests = tests_rollup.done_tests + EXCLUDED.done_tests,
+                    null_tests = tests_rollup.null_tests + EXCLUDED.null_tests,
+                    total_tests = tests_rollup.total_tests + EXCLUDED.total_tests,
+                    duration_min = LEAST(tests_rollup.duration_min, EXCLUDED.duration_min),
+                    duration_max = GREATEST(tests_rollup.duration_max, EXCLUDED.duration_max)
+                """,
+                values,
+            )
+        out(
+            f"Upserted {len(values)} tests_rollup records "
+            f"in {time.time() - t0:.3f}s"
+        )
+        AGGREGATION_RECORDS_WRITTEN.labels(table="tests_rollup").inc(len(values))
+
+    def _process_tests_fact_rollup_batch(
+        self,
+        ready_tests: Sequence[PendingTest],
+        test_builds_by_id: dict[str, Builds],
+    ) -> None:
+        if not ready_tests:
+            return
+
+        fact_values, rollup_data = aggregate_tests_fact_rollup(
+            ready_tests, test_builds_by_id
+        )
+        self._process_tests_fact(fact_values)
+        self._process_tests_rollup(rollup_data)
 
     def _process_hardware_batch(
         self,
@@ -943,6 +1224,9 @@ class Command(BaseCommand):
 
                 if ready_tests:
                     self._process_hardware_batch(ready_tests, test_builds_by_id)
+                    self._process_tests_fact_rollup_batch(
+                        ready_tests, test_builds_by_id
+                    )
 
                 (
                     ready_builds,
