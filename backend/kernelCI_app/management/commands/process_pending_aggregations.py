@@ -21,7 +21,6 @@ from kernelCI_app.models import (
     PendingBuilds,
     ProcessedListingItems,
     SimplifiedStatusChoices,
-    TestsFact,
 )
 
 from prometheus_client import Counter
@@ -523,22 +522,17 @@ def _fetch_test_issues(test_ids: list[str]) -> dict[str, dict]:
     return issues_map
 
 
-def aggregate_tests_fact_rollup(
+def aggregate_tests_rollup(
     ready_tests: Sequence[PendingTest],
     test_builds_by_id: dict[str, Builds],
-) -> tuple[list[tuple], dict[tuple, dict]]:
+) -> dict[tuple, dict]:
     """
-    Build fact rows and rollup deltas from pending tests.
-    Returns (fact_values, rollup_data) without touching the database.
+    Build rollup data from pending tests.
+    Returns rollup data without touching the database.
     """
     test_ids = [t.test_id for t in ready_tests]
     issues_map = _fetch_test_issues(test_ids)
 
-    existing_fact_ids = set(
-        TestsFact.objects.filter(test_id__in=test_ids).values_list("test_id", flat=True)
-    )
-
-    fact_values: list[tuple] = []
     rollup_data: dict[tuple, dict] = {}
 
     for test in ready_tests:
@@ -567,39 +561,6 @@ def aggregate_tests_fact_rollup(
         compiler = build.compiler or "Unknown"
         config = build.config_name or "Unknown"
         is_boot = test.is_boot
-        duration_int = int(test.duration) if test.duration else None
-
-        fact_values.append(
-            (
-                test.test_id,
-                test.build_id,
-                checkout.id,
-                checkout.origin,
-                checkout.tree_name,
-                checkout.git_repository_branch,
-                checkout.git_repository_url,
-                checkout.git_commit_hash,
-                test.origin,
-                path,
-                path_group,
-                test.full_status,
-                duration_int,
-                test.start_time,
-                arch,
-                compiler,
-                config,
-                test.platform,
-                test.lab,
-                hardware_key,
-                issue_id,
-                issue_version,
-                issue_uncategorized,
-                is_boot,
-            )
-        )
-
-        if test.test_id in existing_fact_ids:
-            continue
 
         rollup_key = (
             checkout.origin,
@@ -632,8 +593,6 @@ def aggregate_tests_fact_rollup(
                 "done_tests": 0,
                 "null_tests": 0,
                 "total_tests": 0,
-                "duration_min": None,
-                "duration_max": None,
             },
         )
 
@@ -641,13 +600,7 @@ def aggregate_tests_fact_rollup(
         record[counter] += 1
         record["total_tests"] += 1
 
-        if duration_int is not None:
-            if record["duration_min"] is None or duration_int < record["duration_min"]:
-                record["duration_min"] = duration_int
-            if record["duration_max"] is None or duration_int > record["duration_max"]:
-                record["duration_max"] = duration_int
-
-    return fact_values, rollup_data
+    return rollup_data
 
 
 class Command(BaseCommand):
@@ -1054,45 +1007,6 @@ class Command(BaseCommand):
             pending_test_count,
         )
 
-    def _process_tests_fact(self, fact_values: list[tuple]) -> None:
-        if not fact_values:
-            return
-
-        t0 = time.time()
-        with connection.cursor() as cursor:
-            cursor.executemany(
-                """
-                INSERT INTO tests_fact (
-                    test_id, build_id, checkout_id,
-                    origin, tree_name, git_repository_branch, git_repository_url,
-                    git_commit_hash,
-                    test_origin, test_path, path_group, test_status,
-                    test_duration, test_start_time,
-                    build_architecture, build_compiler, build_config_name,
-                    test_platform, test_lab, hardware_key,
-                    issue_id, issue_version, issue_uncategorized, is_boot
-                )
-                VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s
-                )
-                ON CONFLICT (test_id) DO UPDATE SET
-                    test_status = EXCLUDED.test_status,
-                    test_duration = EXCLUDED.test_duration,
-                    test_start_time = EXCLUDED.test_start_time,
-                    issue_id = EXCLUDED.issue_id,
-                    issue_version = EXCLUDED.issue_version,
-                    issue_uncategorized = EXCLUDED.issue_uncategorized
-                """,
-                fact_values,
-            )
-        out(
-            f"Upserted {len(fact_values)} tests_fact records "
-            f"in {time.time() - t0:.3f}s"
-        )
-        AGGREGATION_RECORDS_WRITTEN.labels(table="tests_fact").inc(len(fact_values))
-
     def _process_tests_rollup(self, rollup_data: dict[tuple, dict]) -> None:
         if not rollup_data:
             return
@@ -1108,8 +1022,6 @@ class Command(BaseCommand):
                 data["done_tests"],
                 data["null_tests"],
                 data["total_tests"],
-                data["duration_min"],
-                data["duration_max"],
             )
             for key, data in rollup_data.items()
         ]
@@ -1126,13 +1038,12 @@ class Command(BaseCommand):
                     issue_id, issue_version, issue_uncategorized, is_boot,
                     pass_tests, fail_tests, skip_tests,
                     error_tests, miss_tests, done_tests,
-                    null_tests, total_tests,
-                    duration_min, duration_max
+                    null_tests, total_tests
                 )
                 VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s
                 )
                 ON CONFLICT ON CONSTRAINT tests_rollup_unique DO UPDATE SET
                     pass_tests = tests_rollup.pass_tests + EXCLUDED.pass_tests,
@@ -1142,9 +1053,7 @@ class Command(BaseCommand):
                     miss_tests = tests_rollup.miss_tests + EXCLUDED.miss_tests,
                     done_tests = tests_rollup.done_tests + EXCLUDED.done_tests,
                     null_tests = tests_rollup.null_tests + EXCLUDED.null_tests,
-                    total_tests = tests_rollup.total_tests + EXCLUDED.total_tests,
-                    duration_min = LEAST(tests_rollup.duration_min, EXCLUDED.duration_min),
-                    duration_max = GREATEST(tests_rollup.duration_max, EXCLUDED.duration_max)
+                    total_tests = tests_rollup.total_tests + EXCLUDED.total_tests
                 """,
                 values,
             )
@@ -1154,7 +1063,7 @@ class Command(BaseCommand):
         )
         AGGREGATION_RECORDS_WRITTEN.labels(table="tests_rollup").inc(len(values))
 
-    def _process_tests_fact_rollup_batch(
+    def _process_tests_rollup_batch(
         self,
         ready_tests: Sequence[PendingTest],
         test_builds_by_id: dict[str, Builds],
@@ -1162,10 +1071,7 @@ class Command(BaseCommand):
         if not ready_tests:
             return
 
-        fact_values, rollup_data = aggregate_tests_fact_rollup(
-            ready_tests, test_builds_by_id
-        )
-        self._process_tests_fact(fact_values)
+        rollup_data = aggregate_tests_rollup(ready_tests, test_builds_by_id)
         self._process_tests_rollup(rollup_data)
 
     def _process_hardware_batch(
@@ -1224,9 +1130,7 @@ class Command(BaseCommand):
 
                 if ready_tests:
                     self._process_hardware_batch(ready_tests, test_builds_by_id)
-                    self._process_tests_fact_rollup_batch(
-                        ready_tests, test_builds_by_id
-                    )
+                    self._process_tests_rollup_batch(ready_tests, test_builds_by_id)
 
                 (
                     ready_builds,
