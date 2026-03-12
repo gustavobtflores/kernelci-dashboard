@@ -18,6 +18,8 @@ from kernelCI_app.models import (
     Builds,
     Checkouts,
     Incidents,
+    TestsRollup,
+    StatusChoices,
 )
 from kernelCI_app.tests.factories.mocks import Build, Issue, Test
 from kernelCI_app.helpers.system import get_running_instance
@@ -64,6 +66,7 @@ class Command(BaseCommand):
             tests = self.create_tests_and_boots(builds=builds)
             issues = self.create_issues(count=options["issues"])
             incidents = self.create_incidents(issues=issues, builds=builds, tests=tests)
+            rollup_rows = self.create_tests_rollup(tests=tests, incidents=incidents)
 
         self.stdout.write(
             self.style.SUCCESS(
@@ -73,6 +76,7 @@ class Command(BaseCommand):
                 f"- {len(tests)} tests\n"
                 f"- {len(issues)} issues\n"
                 f"- {len(incidents)} incidents\n"
+                f"- {len(rollup_rows)} tests_rollup rows\n"
             )
         )
 
@@ -101,6 +105,7 @@ class Command(BaseCommand):
 
     def clear_data(self) -> None:
         """Clear existing test data."""
+        TestsRollup.objects.all().delete()
         Incidents.objects.all().delete()
         Issues.objects.all().delete()
         Tests.objects.all().delete()
@@ -226,3 +231,134 @@ class Command(BaseCommand):
                         incidents.append(incident)
 
         return incidents
+
+    def create_tests_rollup(
+        self, *, tests: list[Tests], incidents: list[Incidents]
+    ) -> list[TestsRollup]:
+        """Aggregate seeded tests into tests_rollup rows.
+
+        Mirrors the logic of aggregate_tests_rollup() in process_pending_aggregations.py,
+        operating on Tests model instances instead of PendingTest records.
+        """
+        self.stdout.write("Creating tests_rollup aggregations...")
+
+        status_to_counter = {
+            StatusChoices.PASS: "pass_tests",
+            StatusChoices.FAIL: "fail_tests",
+            StatusChoices.SKIP: "skip_tests",
+            StatusChoices.ERROR: "error_tests",
+            StatusChoices.MISS: "miss_tests",
+            StatusChoices.DONE: "done_tests",
+        }
+
+        test_issue_map: dict[str, dict] = {}
+        for incident in incidents:
+            if incident.test_id:
+                test_issue_map.setdefault(
+                    incident.test_id,
+                    {
+                        "issue_id": incident.issue_id,
+                        "issue_version": incident.issue_version,
+                    },
+                )
+
+        rollup_data: dict[tuple, dict] = {}
+
+        for test in tests:
+            checkout = test.build.checkout
+            path = test.path or ""
+            path_group = path.split(".", 1)[0] if path else "-"
+            path_group = path_group or "-"
+
+            compatible = test.environment_compatible
+            platform = (
+                (test.environment_misc or {}).get("platform")
+                if test.environment_misc
+                else None
+            )
+
+            if compatible:
+                hardware_key = compatible[0]
+            elif platform:
+                hardware_key = platform
+            else:
+                hardware_key = "Unknown"
+
+            issue_info = test_issue_map.get(test.id)
+            issue_id = issue_info["issue_id"] if issue_info else None
+            issue_version = issue_info["issue_version"] if issue_info else None
+            issue_uncategorized = issue_id is None and test.status == StatusChoices.FAIL
+
+            arch = test.build.architecture or "Unknown"
+            compiler = (
+                test.build.compiler[0]
+                if isinstance(test.build.compiler, list) and test.build.compiler
+                else test.build.compiler or "Unknown"
+            )
+            config = test.build.config_name or "Unknown"
+            is_boot = bool(path) and path.startswith("boot")
+
+            rollup_key = (
+                checkout.origin,
+                checkout.tree_name,
+                checkout.git_repository_branch,
+                checkout.git_repository_url,
+                checkout.git_commit_hash,
+                path_group,
+                config,
+                arch,
+                compiler,
+                hardware_key,
+                platform,
+                None,
+                test.origin,
+                issue_id,
+                issue_version,
+                issue_uncategorized,
+                is_boot,
+            )
+
+            record = rollup_data.setdefault(
+                rollup_key,
+                {
+                    "pass_tests": 0,
+                    "fail_tests": 0,
+                    "skip_tests": 0,
+                    "error_tests": 0,
+                    "miss_tests": 0,
+                    "done_tests": 0,
+                    "null_tests": 0,
+                    "total_tests": 0,
+                },
+            )
+
+            counter = status_to_counter.get(test.status, "null_tests")
+            record[counter] += 1
+            record["total_tests"] += 1
+
+        rollup_objects = [
+            TestsRollup(
+                origin=key[0],
+                tree_name=key[1],
+                git_repository_branch=key[2],
+                git_repository_url=key[3],
+                git_commit_hash=key[4],
+                path_group=key[5],
+                build_config_name=key[6],
+                build_architecture=key[7],
+                build_compiler=key[8],
+                hardware_key=key[9],
+                test_platform=key[10],
+                test_lab=key[11],
+                test_origin=key[12],
+                issue_id=key[13],
+                issue_version=key[14],
+                issue_uncategorized=key[15],
+                is_boot=key[16],
+                **counts,
+            )
+            for key, counts in rollup_data.items()
+        ]
+
+        created = TestsRollup.objects.bulk_create(rollup_objects)
+        return created
