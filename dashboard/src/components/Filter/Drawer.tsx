@@ -40,7 +40,7 @@ const DrawerHeader = (): JSX.Element => {
   return (
     <header className="mb-7 w-full">
       <DrawerTitle>
-        <div className="mx-auto mb-4 flex w-[1400px] items-center justify-between">
+        <div className="mx-auto mb-4 flex max-w-[1400px] items-center justify-between">
           <span className="text-2xl/[42px] font-bold">
             <FormattedMessage id="filter.filtering" />
           </span>
@@ -166,9 +166,9 @@ const Drawer = ({
 
       <DrawerContent className="bg-light-gray flex h-screen items-center px-4">
         <DrawerHeader />
-        <section className="h-full overflow-y-auto">
+        <section className="h-full max-w-full overflow-y-auto">
           {drawerLinkComponent}
-          <div className="w-[1000px] rounded-lg bg-white px-6 py-5">
+          <div className="w-auto rounded-lg bg-white px-6 py-5">
             {showLegend && <Legend />}
             <div>{children}</div>
           </div>
