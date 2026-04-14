@@ -1,5 +1,6 @@
 import hashlib
 import os
+import random
 import shutil
 import signal
 import time
@@ -11,6 +12,8 @@ from kernelCI_app.management.commands.helpers.process_pending_helpers import (
 from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.db import connection, transaction
+from django.db.utils import OperationalError
+from psycopg.errors import DeadlockDetected
 from kernelCI_app.constants.general import MAESTRO_DUMMY_BUILD_PREFIX
 from kernelCI_app.helpers.logger import out
 from kernelCI_app.management.commands.helpers.aggregation_helpers import simplify_status
@@ -525,6 +528,11 @@ def _fetch_test_issues(test_ids: list[str]) -> dict[str, dict]:
 
 
 class Command(BaseCommand):
+    # WARNING: This command is designed for single-worker execution only.
+    # Running multiple concurrent workers is not safe: select_for_update(skip_locked=True)
+    # releases row locks when Transaction 1 commits, but pending rows are not deleted until
+    # Transaction 2. In that window a second worker can claim and process the same rows,
+    # causing double-counting in tree_listing aggregations.
     help = """
         Process pending tests for hardware status aggregation,
         checking corresponding builds and checkouts in the database.
@@ -1075,6 +1083,7 @@ class Command(BaseCommand):
         test_builds_by_id: dict[str, Builds],
         ready_builds: Sequence[PendingBuilds],
         build_checkouts_by_id: dict[str, Checkouts],
+        max_retries: int = 5,
     ) -> None:
         tree_listing_data, new_processed_entries_tree = aggregate_tree_listing(
             ready_tests,
@@ -1082,8 +1091,25 @@ class Command(BaseCommand):
             ready_builds,
             build_checkouts_by_id,
         )
-        self._process_tree_listing(tree_listing_data)
-        self._process_new_processed_entries(new_processed_entries_tree)
+        for attempt in range(max_retries):
+            try:
+                with transaction.atomic():
+                    self._process_tree_listing(tree_listing_data)
+                    self._process_new_processed_entries(new_processed_entries_tree)
+                break
+            except OperationalError as e:
+                if (
+                    isinstance(e.__cause__, DeadlockDetected)
+                    and attempt < max_retries - 1
+                ):
+                    wait = random.uniform(0.5, min(30, 2 ** (attempt + 2)))
+                    out(
+                        f"Deadlock on tree_listing (attempt {attempt + 1}/{max_retries}), "
+                        f"retrying in {wait:.2f}s..."
+                    )
+                    time.sleep(wait)
+                else:
+                    raise
 
     def process_pending_batch(self, batch_size: int) -> int:
         last_processed_test_id = None
@@ -1092,15 +1118,15 @@ class Command(BaseCommand):
         builds_count = 0
 
         while True:
-            with transaction.atomic():
-                out(
-                    f"Starting batch processing "
-                    f"(last_processed_test_id={str(last_processed_test_id)[:20]}, "
-                    f"last_processed_build_id={str(last_processed_build_id)[:20]}, "
-                    f"batch_size={batch_size})..."
-                )
-                t0 = time.time()
+            out(
+                f"Starting batch processing "
+                f"(last_processed_test_id={str(last_processed_test_id)[:20]}, "
+                f"last_processed_build_id={str(last_processed_build_id)[:20]}, "
+                f"batch_size={batch_size})..."
+            )
+            t0 = time.time()
 
+            with transaction.atomic():
                 (
                     ready_tests,
                     test_builds_by_id,
@@ -1127,27 +1153,28 @@ class Command(BaseCommand):
                     batch_size=batch_size,
                 )
 
-                if ready_tests or ready_builds:
-                    self._process_tree_listing_batch(
-                        ready_tests,
-                        test_builds_by_id,
-                        ready_builds,
-                        build_checkouts_by_id,
-                    )
+            if ready_tests or ready_builds:
+                self._process_tree_listing_batch(
+                    ready_tests,
+                    test_builds_by_id,
+                    ready_builds,
+                    build_checkouts_by_id,
+                )
 
+            with transaction.atomic():
                 tests_count += self._delete_ready_tests(ready_tests=ready_tests)
                 builds_count += self._delete_ready_builds(ready_builds=ready_builds)
 
-                out(
-                    f"Batch processed: {tests_count} tests aggregated, "
-                    f"skipped (no build): {skipped_no_build}; "
-                    f"{builds_count} builds aggregated, "
-                    f"skipped (no checkout): {skipped_no_checkout}; "
-                    f"in {time.time() - t0:.3f}s"
-                )
+            out(
+                f"Batch processed: {tests_count} tests aggregated, "
+                f"skipped (no build): {skipped_no_build}; "
+                f"{builds_count} builds aggregated, "
+                f"skipped (no checkout): {skipped_no_checkout}; "
+                f"in {time.time() - t0:.3f}s"
+            )
 
-                if pending_test_count == 0 and pending_build_count == 0:
-                    out("No pending items found, exiting batch loop")
-                    break
+            if pending_test_count == 0 and pending_build_count == 0:
+                out("No pending items found, exiting batch loop")
+                break
 
         return tests_count + builds_count
