@@ -58,11 +58,13 @@ export const DumbBaseTable = ({
 
 export const DumbTableHeader = ({
   children,
+  className,
 }: {
   children: ReactNode;
+  className?: string;
 }): JSX.Element => {
   return (
-    <TableHeader className="bg-medium-gray">
+    <TableHeader className={classNames('bg-medium-gray', className)}>
       <TableRow>{children}</TableRow>
     </TableHeader>
   );

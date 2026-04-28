@@ -7,8 +7,6 @@ import {
   flexRender,
   getCoreRowModel,
   getExpandedRowModel,
-  getFilteredRowModel,
-  getPaginationRowModel,
   getSortedRowModel,
   useReactTable,
 } from '@tanstack/react-table';
@@ -24,20 +22,15 @@ import { possibleTableFilters } from '@/types/tree/TreeDetails';
 
 import type { TestHistory, TIndividualTest, TPathTests } from '@/types/general';
 
-import { StatusTable } from '@/utils/constants/database';
-
 import { TableBody, TableCell, TableRow } from '@/components/ui/table';
 
-import BaseTable, { TableHead } from '@/components/Table/BaseTable';
-
-import { PaginationInfo } from '@/components/Table/PaginationInfo';
-
-import { usePaginationState } from '@/hooks/usePaginationState';
+import {
+  DumbBaseTable,
+  DumbTableHeader,
+  TableHead,
+} from '@/components/Table/BaseTable';
 
 import type { TableKeys } from '@/utils/constants/tables';
-import { buildHardwareArray, buildTreeBranch } from '@/utils/table';
-
-import { EMPTY_VALUE } from '@/lib/string';
 
 import { TableTopFilters } from '@/components/Table/TableTopFilters';
 
@@ -45,6 +38,14 @@ import type { TStatusFilters } from '@/components/Table/TableStatusFilter';
 
 import { IndividualTestsTable } from './IndividualTestsTable';
 import { defaultColumns, defaultInnerColumns } from './DefaultTestsColumns';
+import { buildTestsTree } from './buildTestsTree';
+import {
+  pruneTree,
+  computeGlobalCounts,
+  matchByStatus,
+  matchByPathSubstring,
+  matchTestByPathSubstring,
+} from './filterTestsTree';
 
 export interface ITestsTable {
   tableKey: TableKeys;
@@ -58,47 +59,8 @@ export interface ITestsTable {
   currentPathFilter?: string;
 }
 
-type TPathTestsStatus = Pick<
-  TPathTests,
-  | 'done_tests'
-  | 'error_tests'
-  | 'fail_tests'
-  | 'miss_tests'
-  | 'pass_tests'
-  | 'skip_tests'
-  | 'null_tests'
-  | 'total_tests'
->;
-
-const countStatus = (group: TPathTestsStatus, status?: string): void => {
-  group.total_tests++;
-  switch (status?.toUpperCase()) {
-    case StatusTable.DONE:
-      group.done_tests++;
-      break;
-    case StatusTable.ERROR:
-      group.error_tests++;
-      break;
-    case StatusTable.FAIL:
-      group.fail_tests++;
-      break;
-    case StatusTable.MISS:
-      group.miss_tests++;
-      break;
-    case StatusTable.PASS:
-      group.pass_tests++;
-      break;
-    case StatusTable.SKIP:
-      group.skip_tests++;
-      break;
-    default:
-      group.null_tests++;
-  }
-};
-
 // TODO: would be useful if the navigation happened within the table, so the parent component would only be required to pass the navigation url instead of the whole function for the update and the currentPath diffFilter (boots/tests Table)
 export function TestsTable({
-  tableKey,
   testHistory,
   onClickFilter,
   filter,
@@ -110,173 +72,52 @@ export function TestsTable({
 }: ITestsTable): JSX.Element {
   const [sorting, setSorting] = useState<SortingState>([]);
   const [expanded, setExpanded] = useState<ExpandedState>({});
-  const [globalFilter, setGlobalFilter] = useState<string | undefined>(
-    currentPathFilter,
-  );
-  const { pagination, paginationUpdater } = usePaginationState(tableKey);
+  const pathFilter = currentPathFilter?.trim();
 
   const intl = useIntl();
 
-  const rawData = useMemo((): TPathTests[] => {
-    type Groups = {
-      [K: string]: TPathTests;
-    };
-    const groups: Groups = {};
-    if (testHistory !== undefined) {
-      testHistory.forEach(e => {
-        if (!e.path) {
-          e.path = EMPTY_VALUE;
-        }
-        const parts = e.path.split('.', 1);
-        const group = parts.length > 0 ? parts[0] : '-';
-        if (!(group in groups)) {
-          groups[group] = {
-            done_tests: 0,
-            fail_tests: 0,
-            miss_tests: 0,
-            pass_tests: 0,
-            null_tests: 0,
-            skip_tests: 0,
-            error_tests: 0,
-            total_tests: 0,
-            path_group: group,
-            individual_tests: [],
-          };
-        }
-        groups[group].individual_tests.push({
-          id: e.id,
-          duration: e.duration?.toString() ?? '',
-          path: e.path,
-          start_time: e.start_time,
-          status: e.status,
-          hardware: buildHardwareArray(
-            e.environment_compatible,
-            e.environment_misc,
-          ),
-          treeBranch: buildTreeBranch(e.tree_name, e.git_repository_branch),
-          lab: e.lab,
-        });
-      });
+  const rawTree = useMemo(() => buildTestsTree(testHistory), [testHistory]);
+
+  const pathFilteredTree = useMemo(() => {
+    if (!pathFilter) {
+      return rawTree;
     }
-    return Object.values(groups);
-  }, [testHistory]);
+    return pruneTree(rawTree, {
+      matchTest: matchTestByPathSubstring(pathFilter),
+      matchNodePath: matchByPathSubstring(pathFilter),
+    });
+  }, [rawTree, pathFilter]);
 
-  const [globalStatusGroup, pathFilteredData] = useMemo((): [
-    TPathTestsStatus,
-    TPathTests[],
-  ] => {
-    const path = globalFilter;
-    const isValidPath = path !== undefined && path !== '';
-    const globalGroup: TPathTestsStatus = {
-      done_tests: 0,
-      fail_tests: 0,
-      miss_tests: 0,
-      pass_tests: 0,
-      null_tests: 0,
-      skip_tests: 0,
-      error_tests: 0,
-      total_tests: 0,
-    };
+  const globalStatusGroup = useMemo(
+    () => computeGlobalCounts(pathFilteredTree),
+    [pathFilteredTree],
+  );
 
-    const filteredData = rawData.reduce<TPathTests[]>((acc, test) => {
-      const localGroup: TPathTestsStatus = {
-        done_tests: 0,
-        fail_tests: 0,
-        miss_tests: 0,
-        pass_tests: 0,
-        null_tests: 0,
-        skip_tests: 0,
-        error_tests: 0,
-        total_tests: 0,
-      };
-      const individualTest = test.individual_tests.filter(t => {
-        let dataIncludesPath = true;
-        if (isValidPath) {
-          dataIncludesPath = t.path?.includes(path) ?? false;
-        }
-        if (dataIncludesPath) {
-          countStatus(localGroup, t.status);
-          countStatus(globalGroup, t.status);
-        }
-        return dataIncludesPath;
-      });
-
-      if (individualTest.length > 0) {
-        acc.push({
-          path_group: test.path_group,
-          individual_tests: individualTest,
-          ...localGroup,
-        });
-      }
-
-      return acc;
-    }, []);
-
-    return [globalGroup, filteredData];
-  }, [globalFilter, rawData]);
-
-  const data = useMemo((): TPathTests[] => {
-    switch (filter) {
-      case 'all':
-        return pathFilteredData;
-      case 'success':
-        return pathFilteredData
-          ?.filter(tests => tests.pass_tests > 0)
-          .map(test => ({
-            ...test,
-            individual_tests: test.individual_tests.filter(
-              t => t.status?.toUpperCase() === StatusTable.PASS,
-            ),
-          }));
-      case 'failed':
-        return pathFilteredData
-          ?.filter(tests => tests.fail_tests > 0)
-          .map(test => ({
-            ...test,
-            individual_tests: test.individual_tests.filter(
-              t => t.status?.toUpperCase() === StatusTable.FAIL,
-            ),
-          }));
-      case 'inconclusive':
-        return pathFilteredData
-          ?.filter(
-            tests =>
-              tests.done_tests > 0 ||
-              tests.error_tests > 0 ||
-              tests.miss_tests > 0 ||
-              tests.skip_tests > 0 ||
-              tests.null_tests > 0,
-          )
-          .map(test => ({
-            ...test,
-            individual_tests: test.individual_tests.filter(t => {
-              const uppercaseTestStatus = t.status?.toUpperCase();
-              const result =
-                uppercaseTestStatus !== StatusTable.PASS &&
-                uppercaseTestStatus !== StatusTable.FAIL;
-              return result;
-            }),
-          }));
-    }
-  }, [filter, pathFilteredData]);
+  const data = useMemo(
+    () =>
+      filter === 'all'
+        ? pathFilteredTree
+        : pruneTree(pathFilteredTree, { matchTest: matchByStatus(filter) }),
+    [pathFilteredTree, filter],
+  );
 
   const table = useReactTable({
     data,
     columns,
     onSortingChange: setSorting,
     getCoreRowModel: getCoreRowModel(),
-    getPaginationRowModel: getPaginationRowModel(),
-    onPaginationChange: paginationUpdater,
     getSortedRowModel: getSortedRowModel(),
-    getFilteredRowModel: getFilteredRowModel(),
-    getRowCanExpand: _ => true,
+    getSubRows: row => row.sub_groups,
+    getRowCanExpand: row =>
+      (row.original.sub_groups !== undefined &&
+        row.original.sub_groups.length > 0) ||
+      row.original.individual_tests.length > 0,
     getExpandedRowModel: getExpandedRowModel(),
     onExpandedChange: setExpanded,
-    onGlobalFilterChange: setGlobalFilter,
-    getRowId: row => row.path_group,
+    getRowId: row =>
+      row.path_prefix ? `${row.path_prefix}.${row.path_group}` : row.path_group,
     state: {
       sorting,
-      pagination,
       expanded,
     },
   });
@@ -334,9 +175,9 @@ export function TestsTable({
 
   const onSearchChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
-      setGlobalFilter(String(e.target.value));
+      const trimmedPathFilter = e.target.value.trim();
       if (updatePathFilter) {
-        updatePathFilter(e.target.value);
+        updatePathFilter(trimmedPathFilter);
       }
     },
     [updatePathFilter],
@@ -364,37 +205,42 @@ export function TestsTable({
 
   const modelRows = table.getRowModel().rows;
   const tableRows = useMemo((): JSX.Element[] | JSX.Element => {
-    return modelRows?.length ? (
-      modelRows.map(row => (
-        <Fragment key={row.id}>
-          <TableRow
-            className="group hover:bg-light-blue cursor-pointer"
-            onClick={() => {
-              if (row.getCanExpand()) {
-                row.toggleExpanded();
-              }
-            }}
-            data-state={row.getIsExpanded() ? 'open' : 'closed'}
-          >
-            {row.getVisibleCells().map(cell => (
-              <TableCell key={cell.id}>
-                {flexRender(cell.column.columnDef.cell, cell.getContext())}
-              </TableCell>
-            ))}
-          </TableRow>
-          {row.getIsExpanded() && (
-            <TableRow>
-              <TableCell colSpan={6} className="p-0">
-                <IndividualTestsTable
-                  getRowLink={getRowLink}
-                  data={data[row.index].individual_tests}
-                  columns={innerColumns}
-                />
-              </TableCell>
+    return modelRows.length ? (
+      modelRows.map(row => {
+        const hasIndividualTests = row.original.individual_tests.length > 0;
+
+        return (
+          <Fragment key={row.id}>
+            <TableRow
+              className="group hover:bg-light-blue cursor-pointer"
+              onClick={() => {
+                if (row.getCanExpand()) {
+                  row.toggleExpanded();
+                }
+              }}
+              data-state={row.getIsExpanded() ? 'open' : 'closed'}
+              data-depth={row.depth}
+            >
+              {row.getVisibleCells().map(cell => (
+                <TableCell key={cell.id}>
+                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                </TableCell>
+              ))}
             </TableRow>
-          )}
-        </Fragment>
-      ))
+            {row.getIsExpanded() && hasIndividualTests && (
+              <TableRow>
+                <TableCell colSpan={6} className="p-0">
+                  <IndividualTestsTable
+                    getRowLink={getRowLink}
+                    data={row.original.individual_tests}
+                    columns={innerColumns}
+                  />
+                </TableCell>
+              </TableRow>
+            )}
+          </Fragment>
+        );
+      })
     ) : (
       <TableRow>
         <TableCell colSpan={columns.length} className="h-24 text-center">
@@ -402,7 +248,7 @@ export function TestsTable({
         </TableCell>
       </TableRow>
     );
-  }, [columns.length, data, getRowLink, innerColumns, modelRows]);
+  }, [columns.length, getRowLink, innerColumns, modelRows]);
 
   return (
     <div className="flex flex-col gap-6 pb-4">
@@ -413,10 +259,14 @@ export function TestsTable({
         onSearchChange={onSearchChange}
         currentPathFilter={currentPathFilter}
       />
-      <BaseTable headerComponents={tableHeaders}>
-        <TableBody>{tableRows}</TableBody>
-      </BaseTable>
-      <PaginationInfo table={table} intlLabel="global.tests" />
+      <div className="h-[600px] overflow-auto">
+        <DumbBaseTable containerClassName="overflow-visible h-full bg-white">
+          <DumbTableHeader className="sticky top-0 z-10">
+            {tableHeaders}
+          </DumbTableHeader>
+          <TableBody>{tableRows}</TableBody>
+        </DumbBaseTable>
+      </div>
     </div>
   );
 }
