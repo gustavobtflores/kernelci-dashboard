@@ -102,7 +102,7 @@ Definition of Done: You have the KernelCI Dashboard frontend running locally.
 > Running the project with Docker is especially useful for testing, as the production instance also runs in containers. This setup provides a more similar environment to production and helps ensure consistency between development and deployment.
 
 > [!IMPORTANT]
-> The current docker compose has settings meant for the staging deployment; for local development you'll need to open the `dashboard_db` service's port (set `5434:5432` so the external port doesn't conflict with the backend) and set `STAGING_EXTERNAL_HTTP_PORT` as `80` in the .env. You'll also use a single `.env` instead of the separate `.env.service`s.
+> The current docker compose has settings meant for the staging deployment; for local development you'll need to open the `dashboard_db` service's port (set `5434:5432` so the external port doesn't conflict with the backend) and set `STAGING_EXTERNAL_HTTP_PORT` as `80` in `.env`.
 
 1. Make sure your backend, frontend, db ssh and Redis are **not** running locally.
   
@@ -111,7 +111,7 @@ Definition of Done: You have the KernelCI Dashboard frontend running locally.
   sudo snap stop redis
   ```
 
-2. Set up the `.env` files in the root of the project by copying the `.env.name.example` files and removing the `.example` at the end of the filenames. For the development you'll need to change the following variables in the .env.backend file:
+2. Set up the root `.env` file by copying `.env.example` and removing the `.example` suffix. For development you'll need to change the following variables in the `.env` file:
 ```
 DEBUG_SQL_QUERY=False
 DEBUG=True
@@ -123,7 +123,7 @@ DB_HOST=dashboard_db  # Docker can't connect to the ssh tunnel host directly.
 DJANGO_SECRET_KEY=$(openssl rand -base64 22)
 ```
 
-If running the notification commands, you should add to your .env.backend the following variables:
+If running the notification commands, add these variables to `.env`:
 ```
 EMAIL_HOST_USER=<your email>
 EMAIL_HOST_PASSWORD=<your app password>
