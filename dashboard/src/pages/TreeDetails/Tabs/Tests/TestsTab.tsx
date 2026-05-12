@@ -105,6 +105,7 @@ const TestsTab = ({
           },
         }),
         params: params,
+        resetScroll: false,
       });
     },
     [navigate, params],
