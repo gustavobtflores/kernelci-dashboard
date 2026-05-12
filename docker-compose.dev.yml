@@ -71,7 +71,7 @@ services:
         networks: [public]
         volumes:
             # Override default template with dev template (Vite proxy + WebSocket)
-            - ./proxy/etc/nginx/templates/dev.conf.template:/etc/nginx/templates/default.conf.template
+            - ./proxy/dev/dev.conf.template:/etc/nginx/templates/default.conf.template
         environment:
             - PROXY_TARGET=${PROXY_TARGET:-http://backend:8000}
         ports:
