@@ -4,7 +4,7 @@ FROM node:22.3-alpine AS builder
 WORKDIR /dashboard
 
 COPY dashboard/package.json dashboard/pnpm-lock.yaml ./
-RUN npm install -g pnpm && pnpm install --frozen-lockfile
+RUN npm install -g pnpm@10.33.3 && pnpm install --frozen-lockfile
 
 COPY dashboard/. ./
 
