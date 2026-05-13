@@ -28,7 +28,7 @@ const Hardware = ({
           pageRoute="/hardware"
         />
       )}
-      <div className="bg-light-gray w-full py-10">
+      <div className="bg-light-gray w-full py-4">
         <HardwareListingPage
           inputFilter={hardwareSearch ?? ''}
           urlFromMap={urlFromMap}

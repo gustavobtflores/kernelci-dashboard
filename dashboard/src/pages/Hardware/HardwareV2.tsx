@@ -28,7 +28,7 @@ export const HardwareV2 = ({
           pageRoute="/hardware/v1"
         />
       )}
-      <div className="bg-light-gray w-full py-10">
+      <div className="bg-light-gray w-full py-4">
         <HardwareListingPageV2
           inputFilter={hardwareSearch ?? ''}
           urlFromMap={urlFromMap}
