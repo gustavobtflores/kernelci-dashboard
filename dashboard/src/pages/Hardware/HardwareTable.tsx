@@ -24,6 +24,7 @@ import { useNavigate, useSearch, type LinkProps } from '@tanstack/react-router';
 import BaseTable, { TableHead } from '@/components/Table/BaseTable';
 
 import { formattedBreakLineValue } from '@/locales/messages';
+import type { MessagesKey } from '@/locales/messages';
 
 import { TableBody, TableCell, TableRow } from '@/components/ui/table';
 import { ConditionalTableCell } from '@/components/Table/ConditionalTableCell';
@@ -57,6 +58,8 @@ import { Badge } from '@/components/ui/badge';
 import QuerySwitcher from '@/components/QuerySwitcher/QuerySwitcher';
 import { MemoizedSectionError } from '@/components/DetailsPages/SectionError';
 
+import { buildHardwareDetailsSearch } from './hardwareTableUtils';
+
 // TODO Extract and reuse the table
 interface IHardwareTable {
   treeTableRows: HardwareItem[];
@@ -67,6 +70,8 @@ interface IHardwareTable {
   error?: Error | null;
   isLoading?: boolean;
   navigateFrom: HardwareListingRoutes;
+  showTimeFilterInput?: boolean;
+  emptyMessageId?: MessagesKey;
 }
 
 type HardwareListingRoutes = '/hardware' | '/hardware/v1' | '/hardware/v2';
@@ -79,17 +84,20 @@ const getLinkProps = (
   tabTarget?: string,
   newDiffFilter?: TFilter,
 ): LinkProps => {
+  const currentPageTab = zPossibleTabValidator.parse(tabTarget);
+
   return {
     from: navigateFrom,
     to: '/hardware/$hardwareId',
     params: { hardwareId: row.original.platform },
-    search: previousSearch => ({
-      ...previousSearch,
-      currentPageTab: zPossibleTabValidator.parse(tabTarget),
-      startTimestampInSeconds,
-      endTimestampInSeconds,
-      diffFilter: { ...previousSearch.diffFilter, ...newDiffFilter },
-    }),
+    search: previousSearch =>
+      buildHardwareDetailsSearch({
+        previousSearch,
+        currentPageTab,
+        startTimestampInSeconds,
+        endTimestampInSeconds,
+        newDiffFilter,
+      }),
     state: s => ({
       ...s,
       id: row.original.platform,
@@ -372,6 +380,8 @@ export function HardwareTable({
   error,
   isLoading,
   navigateFrom,
+  showTimeFilterInput = true,
+  emptyMessageId = 'hardwareListing.notFound',
 }: IHardwareTable): JSX.Element {
   const { listingSize } = useSearch({ strict: false });
   const navigate = useNavigate({ from: navigateFrom });
@@ -458,11 +468,12 @@ export function HardwareTable({
     ) : (
       <TableRow>
         <TableCell colSpan={columns.length} className="h-24 text-center">
-          <FormattedMessage id="hardwareListing.notFound" />
+          <FormattedMessage id={emptyMessageId} />
         </TableCell>
       </TableRow>
     );
   }, [
+    emptyMessageId,
     modelRows,
     navigateFrom,
     columns.length,
@@ -490,10 +501,12 @@ export function HardwareTable({
           />
         </span>
         <div className="flex justify-end gap-y-2 max-[700px]:flex-wrap">
-          <MemoizedInputTime
-            navigateFrom={navigateFrom}
-            defaultInterval={REDUCED_TIME_SEARCH}
-          />
+          {showTimeFilterInput && (
+            <MemoizedInputTime
+              navigateFrom={navigateFrom}
+              defaultInterval={REDUCED_TIME_SEARCH}
+            />
+          )}
           <ItemsPerPageSelector
             table={table}
             onPaginationChange={navigateWithPageSize}

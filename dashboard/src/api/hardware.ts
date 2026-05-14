@@ -5,7 +5,8 @@ import { useSearch } from '@tanstack/react-router';
 
 import type {
   HardwareListingResponse,
-  HardwareListingResponseV2,
+  HardwareRevisionSelection,
+  HardwareSelectorsResponse,
 } from '@/types/hardware';
 
 import type { HardwareListingRoutesMap } from '@/utils/constants/hardwareListing';
@@ -57,17 +58,13 @@ export const useHardwareListing = (
   });
 };
 
-const fetchHardwareListingV2 = async (
+const fetchHardwareSelectors = async (
   origin: string,
-  startTimestampInSeconds: number,
-  endTimestampInSeconds: number,
-): Promise<HardwareListingResponseV2> => {
-  const data = await RequestData.get<HardwareListingResponseV2>(
-    '/api/hardware-v2/',
+): Promise<HardwareSelectorsResponse> => {
+  const data = await RequestData.get<HardwareSelectorsResponse>(
+    '/api/hardware/selectors/',
     {
       params: {
-        startTimestampInSeconds,
-        endTimestampInSeconds,
         origin,
       },
     },
@@ -76,28 +73,68 @@ const fetchHardwareListingV2 = async (
   return data;
 };
 
-export const useHardwareListingV2 = (
-  startTimestampInSeconds: number,
-  endTimestampInSeconds: number,
+export const useHardwareSelectors = (
   searchFrom: HardwareListingRoutesMap['v2']['search'],
-): UseQueryResult<HardwareListingResponseV2> => {
+): UseQueryResult<HardwareSelectorsResponse> => {
+  const { origin } = useSearch({ from: searchFrom });
+
+  return useQuery({
+    queryKey: ['hardwareSelectors', origin],
+    queryFn: () => fetchHardwareSelectors(origin),
+    refetchOnWindowFocus: false,
+  });
+};
+
+const fetchHardwareListingByRevision = async (
+  selection: HardwareRevisionSelection,
+  origin: string,
+): Promise<HardwareListingResponse> => {
+  const data = await RequestData.get<HardwareListingResponse>(
+    '/api/hardware-by-revision/',
+    {
+      params: {
+        origin,
+        tree_name: selection.treeName,
+        git_repository_url: selection.gitRepositoryUrl,
+        git_repository_branch: selection.gitBranch,
+        git_commit_hash: selection.gitCommitHash,
+      },
+    },
+  );
+
+  return data;
+};
+
+export const useHardwareListingByRevision = (
+  selection: HardwareRevisionSelection | null,
+  searchFrom: HardwareListingRoutesMap['v2']['search'],
+): UseQueryResult<HardwareListingResponse> => {
   const { origin } = useSearch({ from: searchFrom });
 
   const queryKey = [
-    'hardwareListingV2',
-    startTimestampInSeconds,
-    endTimestampInSeconds,
+    'hardwareListingByRevision',
     origin,
+    selection?.treeName,
+    selection?.gitRepositoryUrl,
+    selection?.gitBranch,
+    selection?.gitCommitHash,
+    selection,
   ];
 
   return useQuery({
     queryKey,
-    queryFn: () =>
-      fetchHardwareListingV2(
-        origin,
-        startTimestampInSeconds,
-        endTimestampInSeconds,
-      ),
+    queryFn: () => {
+      if (selection === null) {
+        return { hardware: [] };
+      }
+      return fetchHardwareListingByRevision(selection, origin);
+    },
+    enabled: Boolean(
+      selection?.treeName &&
+        selection?.gitRepositoryUrl &&
+        selection?.gitBranch &&
+        selection?.gitCommitHash,
+    ),
     refetchOnWindowFocus: false,
   });
 };
