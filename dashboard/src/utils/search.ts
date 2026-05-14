@@ -151,6 +151,10 @@ const generalMinifiedParams: Record<SearchParamsKeys, string> = {
   endTimestampInSeconds: 'et',
   issueVersion: 'iv',
   logOpen: 'l',
+  treeName: 't',
+  gitRepositoryUrl: 'hgu',
+  gitBranch: 'gb',
+  gitCommitHash: 'hch',
 } as const;
 
 const treeInfoMinifiedParams: Record<keyof TTreeInformation, string> = {
