@@ -179,6 +179,156 @@ def get_hardware_listing_data(
         return cursor.fetchall()
 
 
+def get_hardware_selectors(origin: str) -> list[dict]:
+    params = {"origin": origin}
+
+    query = """
+        WITH qualified_revisions AS (
+            SELECT
+                c.tree_name,
+                c.git_repository_url,
+                c.git_repository_branch,
+                c.git_commit_hash,
+                c.git_commit_name,
+                MAX(c.start_time) AS latest_start_time
+            FROM
+                checkouts c
+                INNER JOIN builds b ON b.checkout_id = c.id
+                INNER JOIN tests ON tests.build_id = b.id
+            WHERE
+                tests.origin = %(origin)s
+                AND tests.environment_misc ->> 'platform' IS NOT NULL
+            GROUP BY
+                c.tree_name,
+                c.git_repository_url,
+                c.git_repository_branch,
+                c.git_commit_hash,
+                c.git_commit_name
+        ),
+        ranked_revisions AS (
+            SELECT
+                qr.tree_name,
+                qr.git_repository_url,
+                qr.git_repository_branch,
+                qr.git_commit_hash,
+                qr.git_commit_name,
+                qr.latest_start_time,
+                MAX(qr.latest_start_time) OVER (
+                    PARTITION BY
+                        qr.tree_name,
+                        qr.git_repository_url,
+                        qr.git_repository_branch
+                ) AS branch_latest_start_time,
+                ROW_NUMBER() OVER (
+                    PARTITION BY
+                        qr.tree_name,
+                        qr.git_repository_url,
+                        qr.git_repository_branch
+                    ORDER BY
+                        qr.latest_start_time DESC
+                ) AS revision_rank
+            FROM
+                qualified_revisions qr
+        )
+        SELECT
+            tree_name,
+            git_repository_url,
+            git_repository_branch,
+            git_commit_hash,
+            git_commit_name,
+            latest_start_time,
+            branch_latest_start_time
+        FROM
+            ranked_revisions
+        WHERE
+            revision_rank <= 50
+        ORDER BY
+            tree_name ASC,
+            branch_latest_start_time DESC,
+            latest_start_time DESC
+    """
+
+    with connection.cursor() as cursor:
+        cursor.execute(query, params)
+        return dict_fetchall(cursor)
+
+
+def get_hardware_listing_data_by_revision(
+    *,
+    origin: str,
+    tree_name: str,
+    git_repository_url: str,
+    git_repository_branch: str,
+    git_commit_hash: str,
+) -> list[tuple]:
+    count_clauses = _get_hardware_listing_count_clauses()
+    params = {
+        "origin": origin,
+        "tree_name": tree_name,
+        "git_repository_url": git_repository_url,
+        "git_repository_branch": git_repository_branch,
+        "git_commit_hash": git_commit_hash,
+    }
+
+    query = f"""
+        WITH relevant_tests AS (
+            SELECT
+                tests.environment_compatible,
+                tests.environment_misc ->> 'platform' AS platform,
+                tests.status,
+                tests.path,
+                tests.id,
+                b.id AS build_id,
+                b.status AS build_status
+            FROM
+                checkouts c
+                INNER JOIN builds b ON b.checkout_id = c.id
+                INNER JOIN tests ON tests.build_id = b.id
+            WHERE
+                c.tree_name = %(tree_name)s
+                AND c.git_repository_url = %(git_repository_url)s
+                AND c.git_repository_branch = %(git_repository_branch)s
+                AND c.git_commit_hash = %(git_commit_hash)s
+                AND tests.origin = %(origin)s
+                AND tests.environment_misc ->> 'platform' IS NOT NULL
+        ),
+        compatible_values AS (
+            SELECT
+                platform,
+                UNNEST(environment_compatible) AS compatible
+            FROM
+                relevant_tests
+            WHERE
+                environment_compatible IS NOT NULL
+        ),
+        compatible_agg AS (
+            SELECT
+                platform,
+                ARRAY_AGG(DISTINCT compatible ORDER BY compatible) AS hardware
+            FROM
+                compatible_values
+            GROUP BY
+                platform
+        )
+        SELECT
+            relevant_tests.platform,
+            compatible_agg.hardware,
+            {count_clauses}
+        FROM
+            relevant_tests
+            LEFT JOIN compatible_agg ON compatible_agg.platform = relevant_tests.platform
+        GROUP BY
+            relevant_tests.platform,
+            compatible_agg.hardware
+        ORDER BY
+            relevant_tests.platform ASC
+    """
+
+    with connection.cursor() as cursor:
+        cursor.execute(query, params)
+        return cursor.fetchall()
+
+
 def get_hardware_listing_data_bulk(
     keys: list[tuple[str, str]],
     start_date: datetime,
