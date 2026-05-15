@@ -1,13 +1,22 @@
-import type { JSX } from 'react';
+import { useState, type JSX } from 'react';
 import { FormattedMessage } from 'react-intl';
+import { Check, ChevronsUpDown } from 'lucide-react';
 
+import { Button } from '@/components/ui/button';
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
+import { cn } from '@/lib/utils';
 import type {
   HardwareRevisionSelection,
   HardwareSelectorBranch,
@@ -37,6 +46,85 @@ interface HardwareRevisionSelectorsPresentationProps {
   onRevisionChange: (nextRevisionHash: string) => void;
 }
 
+interface HardwareRevisionComboboxProps {
+  options: SelectorOption[];
+  selectedValue?: string;
+  onValueChange: (nextValue: string) => void;
+  placeholder: string;
+  searchPlaceholder: string;
+  emptyMessage: string;
+  dataTestId: string;
+  disabled?: boolean;
+}
+
+const HardwareRevisionCombobox = ({
+  options,
+  selectedValue,
+  onValueChange,
+  placeholder,
+  searchPlaceholder,
+  emptyMessage,
+  dataTestId,
+  disabled = false,
+}: HardwareRevisionComboboxProps): JSX.Element => {
+  const [open, setOpen] = useState(false);
+  const selectedOption = options.find(option => option.value === selectedValue);
+
+  return (
+    <Popover onOpenChange={setOpen} open={open}>
+      <PopoverTrigger asChild>
+        <Button
+          aria-expanded={open}
+          className={cn(
+            'w-[220px] justify-between',
+            !selectedOption && 'text-slate-500',
+          )}
+          data-test-id={dataTestId}
+          disabled={disabled}
+          role="combobox"
+          variant="outline"
+        >
+          <span className="truncate">
+            {selectedOption ? selectedOption.label : placeholder}
+          </span>
+          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-[220px] p-0">
+        <Command>
+          <CommandInput placeholder={searchPlaceholder} />
+          <CommandList>
+            <CommandEmpty>{emptyMessage}</CommandEmpty>
+            <CommandGroup>
+              {options.map(option => (
+                <CommandItem
+                  key={option.value}
+                  keywords={[option.label]}
+                  onSelect={() => {
+                    onValueChange(option.value);
+                    setOpen(false);
+                  }}
+                  value={option.value}
+                >
+                  <span className="truncate">{option.label}</span>
+                  <Check
+                    className={cn(
+                      'ml-auto h-4 w-4 shrink-0',
+                      selectedValue === option.value
+                        ? 'opacity-100'
+                        : 'opacity-0',
+                    )}
+                  />
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+};
+
 const HardwareRevisionSelectorsPresentation = ({
   treeOptions,
   branchOptions,
@@ -54,54 +142,47 @@ const HardwareRevisionSelectorsPresentation = ({
         <span className="text-dim-gray text-sm font-medium">
           <FormattedMessage id="hardwareListing.treeSelectorLabel" />
         </span>
-        <Select onValueChange={onTreeChange} value={selectedTreeName}>
-          <SelectTrigger data-test-id="hardware-tree-selector">
-            <SelectValue placeholder="" />
-          </SelectTrigger>
-          <SelectContent>
-            {treeOptions.map(tree => (
-              <SelectItem key={tree.value} value={tree.value}>
-                {tree.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <HardwareRevisionCombobox
+          dataTestId="hardware-tree-selector"
+          emptyMessage="No tree found."
+          onValueChange={onTreeChange}
+          options={treeOptions}
+          placeholder="Select tree"
+          searchPlaceholder="Search tree..."
+          selectedValue={selectedTreeName}
+        />
       </div>
 
       <div className="flex items-center gap-2">
         <span className="text-dim-gray text-sm font-medium">
           <FormattedMessage id="hardwareListing.branchSelectorLabel" />
         </span>
-        <Select onValueChange={onBranchChange} value={selectedBranchValue}>
-          <SelectTrigger data-test-id="hardware-branch-selector">
-            <SelectValue placeholder="" />
-          </SelectTrigger>
-          <SelectContent>
-            {branchOptions.map(branch => (
-              <SelectItem key={branch.value} value={branch.value}>
-                {branch.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <HardwareRevisionCombobox
+          dataTestId="hardware-branch-selector"
+          disabled={branchOptions.length === 0}
+          emptyMessage="No branch found."
+          onValueChange={onBranchChange}
+          options={branchOptions}
+          placeholder="Select branch"
+          searchPlaceholder="Search branch..."
+          selectedValue={selectedBranchValue}
+        />
       </div>
 
       <div className="flex items-center gap-2">
         <span className="text-dim-gray text-sm font-medium">
           <FormattedMessage id="hardwareListing.revisionSelectorLabel" />
         </span>
-        <Select onValueChange={onRevisionChange} value={selectedRevisionHash}>
-          <SelectTrigger data-test-id="hardware-revision-selector">
-            <SelectValue placeholder="" />
-          </SelectTrigger>
-          <SelectContent>
-            {revisionOptions.map(revision => (
-              <SelectItem key={revision.value} value={revision.value}>
-                {revision.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <HardwareRevisionCombobox
+          dataTestId="hardware-revision-selector"
+          disabled={revisionOptions.length === 0}
+          emptyMessage="No revision found."
+          onValueChange={onRevisionChange}
+          options={revisionOptions}
+          placeholder="Select revision"
+          searchPlaceholder="Search revision..."
+          selectedValue={selectedRevisionHash}
+        />
       </div>
     </div>
   );
