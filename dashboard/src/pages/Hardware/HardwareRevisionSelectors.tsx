@@ -1,6 +1,7 @@
-import { useState, type JSX } from 'react';
+import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { FormattedMessage } from 'react-intl';
 import { Check, ChevronsUpDown } from 'lucide-react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 
 import { Button } from '@/components/ui/button';
 import {
@@ -55,6 +56,9 @@ interface HardwareRevisionComboboxProps {
   emptyMessage: string;
   dataTestId: string;
   disabled?: boolean;
+  virtualized?: boolean;
+  listHeight?: string;
+  virtualItemSize?: number;
 }
 
 const HardwareRevisionCombobox = ({
@@ -66,12 +70,71 @@ const HardwareRevisionCombobox = ({
   emptyMessage,
   dataTestId,
   disabled = false,
+  virtualized = false,
+  listHeight = '300px',
+  virtualItemSize = 36,
 }: HardwareRevisionComboboxProps): JSX.Element => {
   const [open, setOpen] = useState(false);
+  const [searchValue, setSearchValue] = useState('');
+  const listRef = useRef<HTMLDivElement | null>(null);
   const selectedOption = options.find(option => option.value === selectedValue);
+  const filteredOptions = useMemo(() => {
+    const normalizedSearch = searchValue.trim().toLowerCase();
+    if (normalizedSearch.length === 0) {
+      return options;
+    }
+
+    return options.filter(option => {
+      const optionLabel = option.label.toLowerCase();
+      const optionValue = option.value.toLowerCase();
+
+      return (
+        optionLabel.includes(normalizedSearch) ||
+        optionValue.includes(normalizedSearch)
+      );
+    });
+  }, [options, searchValue]);
+  const selectedIndexInFiltered = useMemo(
+    () => filteredOptions.findIndex(option => option.value === selectedValue),
+    [filteredOptions, selectedValue],
+  );
+  const rowVirtualizer = useVirtualizer({
+    count: filteredOptions.length,
+    getScrollElement: () => listRef.current,
+    estimateSize: () => virtualItemSize,
+    overscan: 8,
+    enabled: virtualized && open,
+    initialRect: {
+      width: 220,
+      height: 300,
+    },
+  });
+
+  const handleSelect = (nextValue: string): void => {
+    onValueChange(nextValue);
+    setOpen(false);
+  };
+
+  useEffect(() => {
+    if (!virtualized || !open || selectedIndexInFiltered < 0) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      rowVirtualizer.scrollToIndex(selectedIndexInFiltered, { align: 'auto' });
+    });
+  }, [open, rowVirtualizer, selectedIndexInFiltered, virtualized]);
 
   return (
-    <Popover onOpenChange={setOpen} open={open}>
+    <Popover
+      onOpenChange={nextOpen => {
+        setOpen(nextOpen);
+        if (!nextOpen) {
+          setSearchValue('');
+        }
+      }}
+      open={open}
+    >
       <PopoverTrigger asChild>
         <Button
           aria-expanded={open}
@@ -91,34 +154,84 @@ const HardwareRevisionCombobox = ({
         </Button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-[220px] p-0">
-        <Command>
-          <CommandInput placeholder={searchPlaceholder} />
-          <CommandList>
-            <CommandEmpty>{emptyMessage}</CommandEmpty>
-            <CommandGroup>
-              {options.map(option => (
-                <CommandItem
-                  key={option.value}
-                  keywords={[option.label]}
-                  onSelect={() => {
-                    onValueChange(option.value);
-                    setOpen(false);
-                  }}
-                  value={option.value}
+        <Command shouldFilter={!virtualized}>
+          <CommandInput
+            onValueChange={virtualized ? setSearchValue : undefined}
+            placeholder={searchPlaceholder}
+            value={virtualized ? searchValue : undefined}
+          />
+          {virtualized ? (
+            <CommandList
+              className="max-h-none"
+              ref={listRef}
+              style={{ height: listHeight }}
+            >
+              {filteredOptions.length === 0 ? (
+                <CommandEmpty>{emptyMessage}</CommandEmpty>
+              ) : (
+                <div
+                  className="relative p-1"
+                  style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
                 >
-                  <span className="truncate">{option.label}</span>
-                  <Check
-                    className={cn(
-                      'ml-auto h-4 w-4 shrink-0',
-                      selectedValue === option.value
-                        ? 'opacity-100'
-                        : 'opacity-0',
-                    )}
-                  />
-                </CommandItem>
-              ))}
-            </CommandGroup>
-          </CommandList>
+                  {rowVirtualizer.getVirtualItems().map(virtualItem => {
+                    const option = filteredOptions[virtualItem.index];
+
+                    return (
+                      <CommandItem
+                        className="absolute top-0 left-0 w-full"
+                        key={option.value}
+                        keywords={[option.label, option.value]}
+                        onSelect={() => {
+                          handleSelect(option.value);
+                        }}
+                        style={{
+                          height: `${virtualItem.size}px`,
+                          transform: `translateY(${virtualItem.start}px)`,
+                        }}
+                        value={option.value}
+                      >
+                        <span className="truncate">{option.label}</span>
+                        <Check
+                          className={cn(
+                            'ml-auto h-4 w-4 shrink-0',
+                            selectedValue === option.value
+                              ? 'opacity-100'
+                              : 'opacity-0',
+                          )}
+                        />
+                      </CommandItem>
+                    );
+                  })}
+                </div>
+              )}
+            </CommandList>
+          ) : (
+            <CommandList>
+              <CommandEmpty>{emptyMessage}</CommandEmpty>
+              <CommandGroup>
+                {options.map(option => (
+                  <CommandItem
+                    key={option.value}
+                    keywords={[option.label]}
+                    onSelect={() => {
+                      handleSelect(option.value);
+                    }}
+                    value={option.value}
+                  >
+                    <span className="truncate">{option.label}</span>
+                    <Check
+                      className={cn(
+                        'ml-auto h-4 w-4 shrink-0',
+                        selectedValue === option.value
+                          ? 'opacity-100'
+                          : 'opacity-0',
+                      )}
+                    />
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </CommandList>
+          )}
         </Command>
       </PopoverContent>
     </Popover>
@@ -177,11 +290,13 @@ const HardwareRevisionSelectorsPresentation = ({
           dataTestId="hardware-revision-selector"
           disabled={revisionOptions.length === 0}
           emptyMessage="No revision found."
+          listHeight="300px"
           onValueChange={onRevisionChange}
           options={revisionOptions}
           placeholder="Select revision"
           searchPlaceholder="Search revision..."
           selectedValue={selectedRevisionHash}
+          virtualized
         />
       </div>
     </div>
