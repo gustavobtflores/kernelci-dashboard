@@ -204,48 +204,26 @@ def get_hardware_selectors(origin: str) -> list[dict]:
                 c.git_repository_branch,
                 c.git_commit_hash,
                 c.git_commit_name
-        ),
-        ranked_revisions AS (
-            SELECT
-                qr.tree_name,
-                qr.git_repository_url,
-                qr.git_repository_branch,
-                qr.git_commit_hash,
-                qr.git_commit_name,
-                qr.latest_start_time,
-                MAX(qr.latest_start_time) OVER (
-                    PARTITION BY
-                        qr.tree_name,
-                        qr.git_repository_url,
-                        qr.git_repository_branch
-                ) AS branch_latest_start_time,
-                ROW_NUMBER() OVER (
-                    PARTITION BY
-                        qr.tree_name,
-                        qr.git_repository_url,
-                        qr.git_repository_branch
-                    ORDER BY
-                        qr.latest_start_time DESC
-                ) AS revision_rank
-            FROM
-                qualified_revisions qr
         )
         SELECT
-            tree_name,
-            git_repository_url,
-            git_repository_branch,
-            git_commit_hash,
-            git_commit_name,
-            latest_start_time,
-            branch_latest_start_time
+            qr.tree_name,
+            qr.git_repository_url,
+            qr.git_repository_branch,
+            qr.git_commit_hash,
+            qr.git_commit_name,
+            qr.latest_start_time,
+            MAX(qr.latest_start_time) OVER (
+                PARTITION BY
+                    qr.tree_name,
+                    qr.git_repository_url,
+                    qr.git_repository_branch
+            ) AS branch_latest_start_time
         FROM
-            ranked_revisions
-        WHERE
-            revision_rank <= 50
+            qualified_revisions qr
         ORDER BY
-            tree_name ASC,
+            qr.tree_name ASC,
             branch_latest_start_time DESC,
-            latest_start_time DESC
+            qr.latest_start_time DESC
     """
 
     with connection.cursor() as cursor:
